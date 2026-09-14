@@ -95,6 +95,15 @@ pub struct TermWizTerminalPane {
     render_rx: FileDescriptor,
 }
 
+/// Returns true for panes used by internal TermWiz overlays (copy/search
+/// prompts and similar short-lived UI), rather than user terminal sessions.
+///
+/// This is kept in this module because the concrete pane type is private to
+/// the overlay implementation, while the mux policy needs to exempt it.
+pub(crate) fn is_synthetic_pane(pane: &dyn Pane) -> bool {
+    pane.downcast_ref::<TermWizTerminalPane>().is_some()
+}
+
 impl TermWizTerminalPane {
     fn new(
         domain_id: DomainId,

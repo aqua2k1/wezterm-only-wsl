@@ -1,6 +1,5 @@
 use crate::client::{ClientId, ClientInfo};
 use crate::pane::{CachePolicy, Pane, PaneId};
-use crate::ssh_agent::AgentProxy;
 use crate::tab::{SplitRequest, Tab, TabId};
 use crate::window::{Window, WindowId};
 use anyhow::{anyhow, Context, Error};
@@ -40,13 +39,8 @@ pub mod domain;
 pub mod localpane;
 pub mod pane;
 pub mod renderable;
-pub mod ssh;
-pub mod ssh_agent;
 pub mod tab;
 pub mod termwiztermtab;
-pub mod tmux;
-pub mod tmux_commands;
-mod tmux_pty;
 pub mod window;
 
 use crate::activity::Activity;
@@ -111,8 +105,8 @@ pub struct Mux {
     clients: RwLock<HashMap<ClientId, ClientInfo>>,
     identity: RwLock<Option<Arc<ClientId>>>,
     num_panes_by_workspace: RwLock<HashMap<String, usize>>,
+    single_session_spawn_lock: smol::lock::Mutex<()>,
     main_thread_id: std::thread::ThreadId,
-    agent: Option<AgentProxy>,
 }
 
 const BUFSIZE: usize = 1024 * 1024;
@@ -436,12 +430,6 @@ impl Mux {
             );
         }
 
-        let agent = if config::configuration().mux_enable_ssh_agent {
-            Some(AgentProxy::new())
-        } else {
-            None
-        };
-
         Self {
             tabs: RwLock::new(HashMap::new()),
             panes: RwLock::new(HashMap::new()),
@@ -454,8 +442,8 @@ impl Mux {
             clients: RwLock::new(HashMap::new()),
             identity: RwLock::new(None),
             num_panes_by_workspace: RwLock::new(HashMap::new()),
+            single_session_spawn_lock: smol::lock::Mutex::new(()),
             main_thread_id: std::thread::current().id(),
-            agent,
         }
     }
 
@@ -470,6 +458,67 @@ impl Mux {
 
     pub fn is_main_thread(&self) -> bool {
         std::thread::current().id() == self.main_thread_id
+    }
+
+    fn is_single_session_exempt_pane(&self, pane: &Arc<dyn Pane>) -> bool {
+        // TermWizTerminalPane is used for copy/search and other short-lived
+        // prompts.  It is deliberately not a terminal session for this
+        // policy, even though it is represented as a mux pane.
+        termwiztermtab::is_synthetic_pane(pane.as_ref())
+    }
+
+    fn has_terminal_session(&self) -> bool {
+        let panes = self.panes.read();
+        panes
+            .values()
+            .any(|pane| !self.is_single_session_exempt_pane(pane))
+    }
+
+    fn has_terminal_session_outside_tab(&self, tab: &Arc<Tab>) -> bool {
+        let pane_ids: HashSet<PaneId> = tab
+            .iter_panes_ignoring_zoom()
+            .into_iter()
+            .map(|position| position.pane.pane_id())
+            .collect();
+        let panes = self.panes.read();
+        panes.values().any(|pane| {
+            !pane_ids.contains(&pane.pane_id()) && !self.is_single_session_exempt_pane(pane)
+        })
+    }
+
+    fn has_terminal_pane_in_tab(&self, tab: &Arc<Tab>) -> bool {
+        tab.iter_panes_ignoring_zoom()
+            .iter()
+            .any(|position| !self.is_single_session_exempt_pane(&position.pane))
+    }
+
+    /// Check whether a new terminal session may be created.
+    ///
+    /// This is public so that domains implemented outside of this crate can
+    /// preserve the policy when they override `Domain::spawn`.
+    pub fn ensure_single_session_spawn_allowed(&self) -> anyhow::Result<()> {
+        if self.has_terminal_session() {
+            anyhow::bail!(concat!(
+                "single-session mode permits only one terminal session; ",
+                "close the existing session before spawning another"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Acquire the async gate used by the built-in domain spawn wrapper.
+    /// Keeping this async avoids blocking the mux executor when two spawn
+    /// requests arrive at the same time.
+    pub(crate) async fn acquire_single_session_spawn_lock(&self) -> smol::lock::MutexGuard<'_, ()> {
+        self.single_session_spawn_lock.lock().await
+    }
+
+    fn ensure_single_session_workspace_change_allowed(
+        &self,
+        old_workspace: &str,
+        new_workspace: &str,
+    ) -> bool {
+        old_workspace == new_workspace || !self.has_terminal_session()
     }
 
     fn recompute_pane_count(&self) {
@@ -492,9 +541,6 @@ impl Mux {
     pub fn client_had_input(&self, client_id: &ClientId) {
         if let Some(info) = self.clients.write().get_mut(client_id) {
             info.update_last_input();
-        }
-        if let Some(agent) = &self.agent {
-            agent.update_target();
         }
     }
 
@@ -635,6 +681,16 @@ impl Mux {
     }
 
     pub fn set_active_workspace_for_client(&self, ident: &Arc<ClientId>, workspace: &str) {
+        if !self.ensure_single_session_workspace_change_allowed(
+            &self.active_workspace_for_client(ident),
+            workspace,
+        ) {
+            log::debug!(
+                "single-session mode: refusing to switch active workspace to {workspace:?}"
+            );
+            return;
+        }
+
         let mut clients = self.clients.write();
         if let Some(info) = clients.get_mut(&ident) {
             info.active_workspace.replace(workspace.to_string());
@@ -651,6 +707,10 @@ impl Mux {
 
     pub fn rename_workspace(&self, old_workspace: &str, new_workspace: &str) {
         if old_workspace == new_workspace {
+            return;
+        }
+        if !self.ensure_single_session_workspace_change_allowed(old_workspace, new_workspace) {
+            log::debug!("single-session mode: refusing to rename workspace {old_workspace:?}");
             return;
         }
         self.notify(MuxNotification::WorkspaceRenamed {
@@ -780,20 +840,33 @@ impl Mux {
     }
 
     pub fn add_pane(&self, pane: &Arc<dyn Pane>) -> Result<(), Error> {
-        if self.panes.read().contains_key(&pane.pane_id()) {
+        let pane_id = pane.pane_id();
+        if self.panes.read().contains_key(&pane_id) {
             return Ok(());
         }
 
-        let clipboard: Arc<dyn Clipboard> = Arc::new(MuxClipboard {
-            pane_id: pane.pane_id(),
-        });
+        let clipboard: Arc<dyn Clipboard> = Arc::new(MuxClipboard { pane_id });
         pane.set_clipboard(&clipboard);
 
         let downloader: Arc<dyn DownloadHandler> = Arc::new(MuxDownloader {});
         pane.set_download_handler(&downloader);
 
-        self.panes.write().insert(pane.pane_id(), Arc::clone(pane));
-        let pane_id = pane.pane_id();
+        {
+            let mut panes = self.panes.write();
+            if panes.contains_key(&pane_id) {
+                return Ok(());
+            }
+            if !self.is_single_session_exempt_pane(pane)
+                && panes
+                    .values()
+                    .any(|existing| !self.is_single_session_exempt_pane(existing))
+            {
+                anyhow::bail!(
+                    "single-session mode permits only one terminal session; cannot add another terminal pane"
+                );
+            }
+            panes.insert(pane_id, Arc::clone(pane));
+        }
         if let Some(reader) = pane.reader()? {
             let banner = self.banner.read().clone();
             let pane = Arc::downgrade(pane);
@@ -810,6 +883,12 @@ impl Mux {
     }
 
     pub fn add_tab_and_active_pane(&self, tab: &Arc<Tab>) -> Result<(), Error> {
+        if self.has_terminal_session_outside_tab(tab) && self.has_terminal_pane_in_tab(tab) {
+            anyhow::bail!(
+                "single-session mode permits only one terminal session; cannot add another terminal tab"
+            );
+        }
+
         self.tabs.write().insert(tab.tab_id(), Arc::clone(tab));
         let pane = tab
             .get_active_pane()
@@ -1001,6 +1080,12 @@ impl Mux {
     }
 
     pub fn add_tab_to_window(&self, tab: &Arc<Tab>, window_id: WindowId) -> anyhow::Result<()> {
+        if self.has_terminal_session_outside_tab(tab) && self.has_terminal_pane_in_tab(tab) {
+            anyhow::bail!(
+                "single-session mode permits only one terminal session; cannot add another terminal window"
+            );
+        }
+
         let tab_id = tab.tab_id();
         {
             let mut window = self
@@ -1196,121 +1281,21 @@ impl Mux {
     pub async fn split_pane(
         &self,
         // TODO: disambiguate with TabId
-        pane_id: PaneId,
-        request: SplitRequest,
-        source: SplitSource,
-        domain: config::keyassignment::SpawnTabDomain,
+        _pane_id: PaneId,
+        _request: SplitRequest,
+        _source: SplitSource,
+        _domain: config::keyassignment::SpawnTabDomain,
     ) -> anyhow::Result<(Arc<dyn Pane>, TerminalSize)> {
-        let (_pane_domain_id, window_id, tab_id) = self
-            .resolve_pane_id(pane_id)
-            .ok_or_else(|| anyhow!("pane_id {} invalid", pane_id))?;
-
-        let domain = self
-            .resolve_spawn_tab_domain(Some(pane_id), &domain)
-            .context("resolve_spawn_tab_domain")?;
-
-        if domain.state() == DomainState::Detached {
-            domain.attach(Some(window_id)).await?;
-        }
-
-        let current_pane = self
-            .get_pane(pane_id)
-            .ok_or_else(|| anyhow!("pane_id {} is invalid", pane_id))?;
-        let term_config = current_pane.get_config();
-
-        let source = match source {
-            SplitSource::Spawn {
-                command,
-                command_dir,
-            } => SplitSource::Spawn {
-                command,
-                command_dir: self.resolve_cwd(
-                    command_dir,
-                    Some(Arc::clone(&current_pane)),
-                    domain.domain_id(),
-                    CachePolicy::FetchImmediate,
-                ),
-            },
-            other => other,
-        };
-
-        let pane = domain.split_pane(source, tab_id, pane_id, request).await?;
-        if let Some(config) = term_config {
-            pane.set_config(config);
-        }
-
-        // FIXME: clipboard
-
-        let dims = pane.get_dimensions();
-
-        let size = TerminalSize {
-            cols: dims.cols,
-            rows: dims.viewport_rows,
-            pixel_height: 0, // FIXME: split pane pixel dimensions
-            pixel_width: 0,
-            dpi: dims.dpi,
-        };
-
-        Ok((pane, size))
+        anyhow::bail!("pane splitting is disabled")
     }
 
     pub async fn move_pane_to_new_tab(
         &self,
-        pane_id: PaneId,
-        window_id: Option<WindowId>,
-        workspace_for_new_window: Option<String>,
+        _pane_id: PaneId,
+        _window_id: Option<WindowId>,
+        _workspace_for_new_window: Option<String>,
     ) -> anyhow::Result<(Arc<Tab>, WindowId)> {
-        let (domain_id, _src_window, src_tab) = self
-            .resolve_pane_id(pane_id)
-            .ok_or_else(|| anyhow::anyhow!("pane {} not found", pane_id))?;
-
-        let domain = self
-            .get_domain(domain_id)
-            .ok_or_else(|| anyhow::anyhow!("domain {domain_id} of pane {pane_id} not found"))?;
-
-        if let Some((tab, window_id)) = domain
-            .move_pane_to_new_tab(pane_id, window_id, workspace_for_new_window.clone())
-            .await?
-        {
-            return Ok((tab, window_id));
-        }
-
-        let src_tab = match self.get_tab(src_tab) {
-            Some(t) => t,
-            None => anyhow::bail!("Invalid tab id {}", src_tab),
-        };
-
-        let window_builder;
-        let (window_id, size) = if let Some(window_id) = window_id {
-            let window = self
-                .get_window_mut(window_id)
-                .ok_or_else(|| anyhow!("window_id {} not found on this server", window_id))?;
-            let tab = window
-                .get_active_tab()
-                .ok_or_else(|| anyhow!("window {} has no tabs", window_id))?;
-            let size = tab.get_size();
-
-            (window_id, size)
-        } else {
-            window_builder = self.new_empty_window(workspace_for_new_window, None);
-            (*window_builder, src_tab.get_size())
-        };
-
-        let pane = src_tab
-            .remove_pane(pane_id)
-            .ok_or_else(|| anyhow::anyhow!("pane {} wasn't in its containing tab!?", pane_id))?;
-
-        let tab = Arc::new(Tab::new(&size));
-        tab.assign_pane(&pane);
-        pane.resize(size)?;
-        self.add_tab_and_active_pane(&tab)?;
-        self.add_tab_to_window(&tab, window_id)?;
-
-        if src_tab.is_dead() {
-            self.remove_tab(src_tab.tab_id());
-        }
-
-        Ok((tab, window_id))
+        anyhow::bail!("moving panes to a new tab is disabled")
     }
 
     pub async fn spawn_tab_or_window(
@@ -1327,6 +1312,8 @@ impl Mux {
         let domain = self
             .resolve_spawn_tab_domain(current_pane_id, &domain)
             .context("resolve_spawn_tab_domain")?;
+
+        self.ensure_single_session_spawn_allowed()?;
 
         let window_builder;
         let term_config;

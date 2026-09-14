@@ -1,10 +1,8 @@
 use crate::scripting::guiwin::GuiWin;
-use crate::spawn::SpawnWhere;
 use crate::termwindow::TermWindowNotif;
 use crate::TermWindow;
 use ::window::*;
 use anyhow::{Context, Error};
-use config::keyassignment::{KeyAssignment, SpawnCommand};
 use config::{ConfigSubscription, NotificationHandling};
 use mux::client::ClientId;
 use mux::window::WindowId as MuxWindowId;
@@ -23,6 +21,7 @@ pub struct GuiFrontEnd {
     spawned_mux_window: RefCell<HashSet<MuxWindowId>>,
     known_windows: RefCell<BTreeMap<Window, MuxWindowId>>,
     client_id: Arc<ClientId>,
+    single_session_workspace: String,
     config_subscription: RefCell<Option<ConfigSubscription>>,
 }
 
@@ -39,6 +38,7 @@ impl GuiFrontEnd {
 
         let mux = Mux::get();
         let client_id = mux.active_identity().expect("to have set my own id");
+        let single_session_workspace = mux.active_workspace_for_client(&client_id);
 
         let front_end = Rc::new(GuiFrontEnd {
             connection,
@@ -46,6 +46,7 @@ impl GuiFrontEnd {
             spawned_mux_window: RefCell::new(HashSet::new()),
             known_windows: RefCell::new(BTreeMap::new()),
             client_id: client_id.clone(),
+            single_session_workspace,
             config_subscription: RefCell::new(None),
         });
 
@@ -150,15 +151,16 @@ impl GuiFrontEnd {
                         | Alert::SetUserVar { .. },
                 } => {}
                 MuxNotification::Empty => {
-                    if config::configuration().quit_when_all_windows_are_closed {
-                        promise::spawn::spawn_into_main_thread(async move {
-                            if mux::activity::Activity::count() == 0 {
-                                log::trace!("Mux is now empty, terminate gui");
-                                Connection::get().unwrap().terminate_message_loop();
-                            }
-                        })
-                        .detach();
-                    }
+                    // There is no listener or launcher that can revive this
+                    // process after its only session exits. Ignore the legacy
+                    // keep-GUI-alive preference, but protect in-flight startup.
+                    promise::spawn::spawn_into_main_thread(async move {
+                        if mux::activity::Activity::count() == 0 && Mux::get().is_empty() {
+                            log::trace!("Single WSL session ended, terminate gui");
+                            Connection::get().unwrap().terminate_message_loop();
+                        }
+                    })
+                    .detach();
                 }
                 MuxNotification::SaveToDownloads { name, data } => {
                     if !config::configuration().allow_download_protocols {
@@ -219,103 +221,15 @@ impl GuiFrontEnd {
         log::trace!("Got app event {event:?}");
         match event {
             ApplicationEvent::OpenCommandScript(file_name) => {
-                let quoted_file_name = match shlex::try_quote(&file_name) {
-                    Ok(name) => name.to_owned().to_string(),
-                    Err(_) => {
-                        log::error!(
-                            "OpenCommandScript: {file_name} has embedded NUL bytes and
-                             cannot be launched via the shell"
-                        );
-                        return;
-                    }
-                };
-                promise::spawn::spawn(async move {
-                    use config::keyassignment::SpawnTabDomain;
-                    use wezterm_term::TerminalSize;
-
-                    // We send the script to execute to the shell on stdin, rather than ask the
-                    // shell to execute it directly, so that we start the shell and read in the
-                    // user's rc files before running the script.  Without this, wezterm on macOS
-                    // is launched with a default and very anemic path, and that is frustrating for
-                    // users.
-
-                    let mux = Mux::get();
-                    let window_id = None;
-                    let pane_id = None;
-                    let cmd = None;
-                    let cwd = None;
-                    let workspace = mux.active_workspace();
-
-                    match mux
-                        .spawn_tab_or_window(
-                            window_id,
-                            SpawnTabDomain::DomainName("local".to_string()),
-                            cmd,
-                            cwd,
-                            TerminalSize::default(),
-                            pane_id,
-                            workspace,
-                            None, // optional position
-                        )
-                        .await
-                    {
-                        Ok((_tab, pane, _window_id)) => {
-                            log::trace!("Spawned {file_name} as pane_id {}", pane.pane_id());
-                            let mut writer = pane.writer();
-                            write!(writer, "{quoted_file_name} ; exit\n").ok();
-                        }
-                        Err(err) => {
-                            log::error!("Failed to spawn {file_name}: {err:#?}");
-                        }
-                    };
-                })
-                .detach();
+                log::error!(
+                    "ignoring OpenCommandScript {:?}: the single-session GUI does not create sessions",
+                    file_name
+                );
             }
             ApplicationEvent::PerformKeyAssignment(action) => {
-                // We should only get here when there are no windows open
-                // and the user picks an action from the menubar.
-                // This is not currently possible, but could be in the
-                // future.
-
-                fn spawn_command(spawn: &SpawnCommand, spawn_where: SpawnWhere) {
-                    let config = config::configuration();
-                    let dpi = config.dpi.unwrap_or_else(|| ::window::default_dpi());
-                    let size =
-                        config.initial_size(dpi as u32, crate::cell_pixel_dims(&config, dpi).ok());
-                    let term_config = Arc::new(config::TermConfig::with_config(config));
-
-                    crate::spawn::spawn_command_impl(spawn, spawn_where, size, None, term_config)
-                }
-
-                match action {
-                    KeyAssignment::QuitApplication => {
-                        // If we get here, there are no windows that could have received
-                        // the QuitApplication command, therefore it must be ok to quit
-                        // immediately
-                        Connection::get().unwrap().terminate_message_loop();
-                    }
-                    KeyAssignment::SpawnWindow => {
-                        spawn_command(&SpawnCommand::default(), SpawnWhere::NewWindow);
-                    }
-                    KeyAssignment::SpawnTab(spawn_where) => {
-                        spawn_command(
-                            &SpawnCommand {
-                                domain: spawn_where,
-                                ..Default::default()
-                            },
-                            SpawnWhere::NewWindow,
-                        );
-                    }
-                    KeyAssignment::SpawnCommandInNewTab(spawn) => {
-                        spawn_command(&spawn, SpawnWhere::NewTab);
-                    }
-                    KeyAssignment::SpawnCommandInNewWindow(spawn) => {
-                        spawn_command(&spawn, SpawnWhere::NewWindow);
-                    }
-                    _ => {
-                        log::warn!("unhandled perform: {action:?}");
-                    }
-                }
+                log::error!(
+                    "ignoring application key assignment in the single-session GUI: {action:?}"
+                );
             }
         }
     }
@@ -342,29 +256,17 @@ impl GuiFrontEnd {
     pub fn reconcile_workspace(&self) -> Future<()> {
         let mut promise = Promise::new();
         let mux = Mux::get();
-        let workspace = mux.active_workspace_for_client(&self.client_id);
-
-        if mux.is_workspace_empty(&workspace) {
-            // We don't want to silently kill off things that might
-            // be running in other workspaces, so let's pick one
-            // and activate it
-            if self.is_switching_workspace() {
-                promise.ok(());
-                return promise.get_future().unwrap();
-            }
-            for workspace in mux.iter_workspaces() {
-                if !mux.is_workspace_empty(&workspace) {
-                    mux.set_active_workspace_for_client(&self.client_id, &workspace);
-                    log::debug!("using {} instead, as it is not empty", workspace);
-                    break;
-                }
-            }
-        }
-
-        let workspace = mux.active_workspace_for_client(&self.client_id);
+        let workspace = self.single_session_workspace.clone();
         log::debug!("workspace is {}, fixup windows", workspace);
 
         let mut mux_windows = mux.iter_windows_in_workspace(&workspace);
+        if mux_windows.len() > 1 {
+            log::warn!(
+                "single-session GUI found {} mux windows; displaying only the first",
+                mux_windows.len()
+            );
+            mux_windows.truncate(1);
+        }
 
         // First, repurpose existing windows.
         // Note that both iter_windows_in_workspace and self.known_windows have a

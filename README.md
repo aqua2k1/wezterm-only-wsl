@@ -1,4 +1,12 @@
-# Wez's Terminal
+# Wez's Terminal — Windows / WSL single-session fork
+
+This tree is being specialized for a native Windows GUI with one local WSL
+session. Remote mux/CLI programs and multi-session entry points have been
+removed; Kitty keyboard and graphics support is retained. This is not an
+upstream-compatible build. See [build instructions and current limitations](docs-internal/windows-wsl-single-session.md).
+
+The remaining upstream introduction and documentation below describe the
+original project, not the reduced feature set of this fork.
 
 <img height="128" alt="WezTerm Icon" src="https://raw.githubusercontent.com/wezterm/wezterm/main/assets/icon/wezterm-icon.svg" align="left"> *A GPU-accelerated cross-platform terminal emulator and multiplexer written by <a href="https://github.com/wez">@wez</a> and implemented in <a href="https://www.rust-lang.org/">Rust</a>*
 

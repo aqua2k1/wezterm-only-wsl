@@ -31,8 +31,7 @@ use ::wezterm_term::input::{ClickPosition, MouseButton as TMB};
 use ::window::*;
 use anyhow::{anyhow, ensure, Context};
 use config::keyassignment::{
-    Confirmation, KeyAssignment, LauncherActionArgs, PaneDirection, Pattern, PromptInputLine,
-    QuickSelectArguments, RotationDirection, SpawnCommand, SplitSize,
+    Confirmation, KeyAssignment, LauncherActionArgs, Pattern, PromptInputLine, QuickSelectArguments,
 };
 use config::window::WindowLevel;
 use config::{
@@ -45,10 +44,7 @@ use mux::pane::{
     CachePolicy, CloseReason, Pane, PaneId, Pattern as MuxPattern, PerformAssignmentResult,
 };
 use mux::renderable::RenderableDimensions;
-use mux::tab::{
-    PositionedPane, PositionedSplit, SplitDirection, SplitRequest, SplitSize as MuxSplitSize, Tab,
-    TabId,
-};
+use mux::tab::{PositionedPane, PositionedSplit, Tab, TabId};
 use mux::window::WindowId as MuxWindowId;
 use mux::{Mux, MuxNotification};
 use mux_lua::MuxPane;
@@ -76,15 +72,11 @@ pub mod clipboard;
 pub mod keyevent;
 pub mod modal;
 mod mouseevent;
-pub mod palette;
-pub mod paneselect;
 mod prevcursor;
 pub mod render;
 pub mod resize;
 mod selection;
-pub mod spawn;
 pub mod webgpu;
-use crate::spawn::SpawnWhere;
 use prevcursor::PrevCursorPos;
 
 const ATLAS_SIZE: usize = 128;
@@ -95,6 +87,88 @@ lazy_static::lazy_static! {
 }
 
 pub const ICON_DATA: &'static [u8] = include_bytes!("../../../assets/icon/terminal.png");
+
+pub(crate) fn wsl_single_session_restriction(assignment: &KeyAssignment) -> Option<&'static str> {
+    match assignment {
+        KeyAssignment::SpawnTab(_)
+        | KeyAssignment::SpawnWindow
+        | KeyAssignment::SpawnCommandInNewTab(_)
+        | KeyAssignment::SpawnCommandInNewWindow(_) => {
+            Some("creating another tab or window is disabled")
+        }
+        KeyAssignment::SplitHorizontal(_)
+        | KeyAssignment::SplitVertical(_)
+        | KeyAssignment::SplitPane(_) => Some("splitting panes is disabled"),
+        KeyAssignment::ActivateTabRelative(_)
+        | KeyAssignment::ActivateTabRelativeNoWrap(_)
+        | KeyAssignment::ActivateTab(_)
+        | KeyAssignment::ActivateLastTab
+        | KeyAssignment::MoveTab(_)
+        | KeyAssignment::MoveTabRelative(_)
+        | KeyAssignment::ShowTabNavigator => Some("tab navigation is disabled"),
+        KeyAssignment::SwitchWorkspaceRelative(_) | KeyAssignment::SwitchToWorkspace { .. } => {
+            Some("workspace switching is disabled")
+        }
+        KeyAssignment::PaneSelect(_)
+        | KeyAssignment::AdjustPaneSize(..)
+        | KeyAssignment::ActivatePaneByIndex(_)
+        | KeyAssignment::ActivatePaneDirection(_)
+        | KeyAssignment::TogglePaneZoomState
+        | KeyAssignment::SetPaneZoomState(_)
+        | KeyAssignment::RotatePanes(_) => Some("pane layout and navigation are disabled"),
+        KeyAssignment::AttachDomain(_) | KeyAssignment::DetachDomain(_) => {
+            Some("domain session management is disabled")
+        }
+        KeyAssignment::ShowLauncher
+        | KeyAssignment::ShowLauncherArgs(_)
+        | KeyAssignment::ActivateCommandPalette => {
+            Some("session-management launchers are disabled")
+        }
+        KeyAssignment::Multiple(actions) => actions.iter().find_map(wsl_single_session_restriction),
+        KeyAssignment::Confirmation(args) => wsl_single_session_restriction(&args.action),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod single_session_tests {
+    use super::*;
+    use config::keyassignment::{ClipboardCopyDestination, ClipboardPasteSource, SpawnTabDomain};
+
+    #[test]
+    fn session_actions_are_rejected() {
+        for action in [
+            KeyAssignment::SpawnWindow,
+            KeyAssignment::SpawnTab(SpawnTabDomain::DefaultDomain),
+            KeyAssignment::ShowTabNavigator,
+            KeyAssignment::SwitchWorkspaceRelative(1),
+            KeyAssignment::ShowLauncher,
+        ] {
+            assert!(wsl_single_session_restriction(&action).is_some());
+        }
+    }
+
+    #[test]
+    fn nested_session_action_is_rejected() {
+        let action = KeyAssignment::Multiple(vec![
+            KeyAssignment::Nop,
+            KeyAssignment::Multiple(vec![KeyAssignment::SpawnWindow]),
+        ]);
+        assert!(wsl_single_session_restriction(&action).is_some());
+    }
+
+    #[test]
+    fn normal_terminal_actions_remain_available() {
+        for action in [
+            KeyAssignment::CopyTo(ClipboardCopyDestination::Clipboard),
+            KeyAssignment::PasteFrom(ClipboardPasteSource::Clipboard),
+            KeyAssignment::ActivateCopyMode,
+            KeyAssignment::SendString("test".to_string()),
+        ] {
+            assert!(wsl_single_session_restriction(&action).is_none());
+        }
+    }
+}
 
 pub fn set_window_position(pos: GuiPosition) {
     POSITION.lock().unwrap().replace(pos);
@@ -605,14 +679,9 @@ impl TermWindow {
         let render_metrics = RenderMetrics::new(&fontconfig)?;
         log::trace!("using render_metrics {:#?}", render_metrics);
 
-        // Initially we have only a single tab, so take that into account
-        // for the tab bar state.
-        let show_tab_bar = config.enable_tab_bar && !config.hide_tab_bar_if_only_one_tab;
-        let tab_bar_height = if show_tab_bar {
-            Self::tab_bar_pixel_height_impl(&config, &fontconfig, &render_metrics)? as usize
-        } else {
-            0
-        };
+        // The single-session GUI deliberately has no tab bar.
+        let show_tab_bar = false;
+        let tab_bar_height = 0usize;
 
         let terminal_size = TerminalSize {
             rows: physical_rows,
@@ -894,7 +963,6 @@ impl TermWindow {
             myself.emit_status_event();
         }
 
-        crate::update::start_update_checker();
         front_end().record_known_window(window, mux_window_id);
 
         Ok(())
@@ -1750,11 +1818,7 @@ impl TermWindow {
             Some(window) => window,
             _ => return,
         };
-        if window.count_tabs() == 1 {
-            self.show_tab_bar = config.enable_tab_bar && !config.hide_tab_bar_if_only_one_tab;
-        } else {
-            self.show_tab_bar = config.enable_tab_bar;
-        }
+        self.show_tab_bar = false;
         *self.cursor_blink_state.borrow_mut() = ColorEase::new(
             config.cursor_blink_rate,
             config.cursor_blink_ease_in,
@@ -1971,15 +2035,13 @@ impl TermWindow {
         let active_pane = panes.iter().find(|p| p.is_active).cloned();
 
         let border = self.get_os_border();
-        let tab_bar_height = self.tab_bar_pixel_height().unwrap_or(0.);
+        let tab_bar_height = 0.;
         let tab_bar_y = if self.config.tab_bar_at_bottom {
             ((self.dimensions.pixel_height as f32) - (tab_bar_height + border.bottom.get() as f32))
                 .max(0.)
         } else {
             border.top.get() as f32
         };
-
-        let tab_bar_height = self.tab_bar_pixel_height().unwrap_or(0.);
 
         let hovering_in_tab_bar = match &self.current_mouse_event {
             Some(event) => {
@@ -2075,11 +2137,7 @@ impl TermWindow {
         if let Some(window) = self.window.as_ref() {
             window.set_title(&title);
 
-            let show_tab_bar = if tabs_count == 1 {
-                self.config.enable_tab_bar && !self.config.hide_tab_bar_if_only_one_tab
-            } else {
-                self.config.enable_tab_bar
-            };
+            let show_tab_bar = false;
 
             // If the number of tabs changed and caused the tab bar to
             // hide/show, then we'll need to resize things.  It is simplest
@@ -2588,6 +2646,10 @@ impl TermWindow {
     ) -> anyhow::Result<PerformAssignmentResult> {
         use KeyAssignment::*;
 
+        if let Some(reason) = wsl_single_session_restriction(assignment) {
+            anyhow::bail!("the single-session GUI: {reason}");
+        }
+
         if let Some(modal) = self.get_modal() {
             if modal.perform_assignment(assignment, self) {
                 return Ok(PerformAssignmentResult::Handled);
@@ -2638,42 +2700,34 @@ impl TermWindow {
                     self.perform_key_assignment(pane, a)?;
                 }
             }
-            SpawnTab(spawn_where) => {
-                self.spawn_tab(spawn_where);
-            }
-            SpawnWindow => {
-                self.spawn_command(&SpawnCommand::default(), SpawnWhere::NewWindow);
-            }
-            SpawnCommandInNewTab(spawn) => {
-                self.spawn_command(spawn, SpawnWhere::NewTab);
-            }
-            SpawnCommandInNewWindow(spawn) => {
-                self.spawn_command(spawn, SpawnWhere::NewWindow);
-            }
-            SplitHorizontal(spawn) => {
-                log::trace!("SplitHorizontal {:?}", spawn);
-                self.spawn_command(
-                    spawn,
-                    SpawnWhere::SplitPane(SplitRequest {
-                        direction: SplitDirection::Horizontal,
-                        target_is_second: true,
-                        size: MuxSplitSize::Percent(50),
-                        top_level: false,
-                    }),
-                );
-            }
-            SplitVertical(spawn) => {
-                log::trace!("SplitVertical {:?}", spawn);
-                self.spawn_command(
-                    spawn,
-                    SpawnWhere::SplitPane(SplitRequest {
-                        direction: SplitDirection::Vertical,
-                        target_is_second: true,
-                        size: MuxSplitSize::Percent(50),
-                        top_level: false,
-                    }),
-                );
-            }
+            SpawnTab(_)
+            | SpawnWindow
+            | SpawnCommandInNewTab(_)
+            | SpawnCommandInNewWindow(_)
+            | SplitHorizontal(_)
+            | SplitVertical(_)
+            | ActivateTabRelative(_)
+            | ActivateTabRelativeNoWrap(_)
+            | ActivateTab(_)
+            | ActivateLastTab
+            | MoveTab(_)
+            | MoveTabRelative(_)
+            | ShowTabNavigator
+            | SwitchWorkspaceRelative(_)
+            | SwitchToWorkspace { .. }
+            | ShowLauncher
+            | ShowLauncherArgs(_)
+            | ActivateCommandPalette
+            | AttachDomain(_)
+            | DetachDomain(_)
+            | SplitPane(_)
+            | AdjustPaneSize(..)
+            | ActivatePaneByIndex(_)
+            | ActivatePaneDirection(_)
+            | TogglePaneZoomState
+            | SetPaneZoomState(_)
+            | RotatePanes(_)
+            | PaneSelect(_) => anyhow::bail!("the single-session GUI does not support this action"),
             ToggleFullScreen => {
                 self.window.as_ref().unwrap().toggle_fullscreen();
             }
@@ -2717,13 +2771,6 @@ impl TermWindow {
             PasteFrom(source) => {
                 self.paste_from_clipboard(pane, *source);
             }
-            ActivateTabRelative(n) => {
-                self.activate_tab_relative(*n, true)?;
-            }
-            ActivateTabRelativeNoWrap(n) => {
-                self.activate_tab_relative(*n, false)?;
-            }
-            ActivateLastTab => self.activate_last_tab()?,
             DecreaseFontSize => self.decrease_font_size(),
             IncreaseFontSize => self.increase_font_size(),
             ResetFontSize => self.reset_font_size(),
@@ -2731,9 +2778,6 @@ impl TermWindow {
                 if let Some(w) = window.as_ref() {
                     self.reset_font_and_window_size(&w)?
                 }
-            }
-            ActivateTab(n) => {
-                self.activate_tab(*n)?;
             }
             ActivateWindow(n) => {
                 self.activate_window(*n)?;
@@ -2768,28 +2812,13 @@ impl TermWindow {
             CloseCurrentPane { confirm } => self.close_current_pane(*confirm),
             Nop | DisableDefaultAssignment => {}
             ReloadConfiguration => config::reload(),
-            MoveTab(n) => self.move_tab(*n)?,
-            MoveTabRelative(n) => self.move_tab_relative(*n)?,
             ScrollByPage(n) => self.scroll_by_page(**n, pane)?,
             ScrollByLine(n) => self.scroll_by_line(*n, pane)?,
             ScrollByCurrentEventWheelDelta => self.scroll_by_current_event_wheel_delta(pane)?,
             ScrollToPrompt(n) => self.scroll_to_prompt(*n, pane)?,
             ScrollToTop => self.scroll_to_top(pane),
             ScrollToBottom => self.scroll_to_bottom(pane),
-            ShowTabNavigator => self.show_tab_navigator(),
             ShowDebugOverlay => self.show_debug_overlay(),
-            ShowLauncher => self.show_launcher(),
-            ShowLauncherArgs(args) => {
-                let title = args.title.clone().unwrap_or("Launcher".to_string());
-                let args = LauncherActionArgs {
-                    title: Some(title),
-                    flags: args.flags,
-                    help_text: args.help_text.clone(),
-                    fuzzy_help_text: args.fuzzy_help_text.clone(),
-                    alphabet: args.alphabet.clone(),
-                };
-                self.show_launcher_impl(args, 0);
-            }
             HideApplication => {
                 let con = Connection::get().expect("call on gui thread");
                 con.hide_application();
@@ -2945,204 +2974,8 @@ impl TermWindow {
                         });
                 }
             }
-            AdjustPaneSize(direction, amount) => {
-                let mux = Mux::get();
-                let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
-                    Some(tab) => tab,
-                    None => return Ok(PerformAssignmentResult::Handled),
-                };
-
-                let tab_id = tab.tab_id();
-
-                if self.tab_state(tab_id).overlay.is_none() {
-                    tab.adjust_pane_size(*direction, *amount);
-                }
-            }
-            ActivatePaneByIndex(index) => {
-                let mux = Mux::get();
-                let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
-                    Some(tab) => tab,
-                    None => return Ok(PerformAssignmentResult::Handled),
-                };
-
-                let tab_id = tab.tab_id();
-
-                if self.tab_state(tab_id).overlay.is_none() {
-                    let panes = tab.iter_panes();
-                    if panes.iter().position(|p| p.index == *index).is_some() {
-                        tab.set_active_idx(*index);
-                    }
-                }
-            }
-            ActivatePaneDirection(direction) => {
-                let mux = Mux::get();
-                let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
-                    Some(tab) => tab,
-                    None => return Ok(PerformAssignmentResult::Handled),
-                };
-
-                let tab_id = tab.tab_id();
-
-                if self.tab_state(tab_id).overlay.is_none() {
-                    tab.activate_pane_direction(*direction);
-                }
-            }
-            TogglePaneZoomState => {
-                let mux = Mux::get();
-                let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
-                    Some(tab) => tab,
-                    None => return Ok(PerformAssignmentResult::Handled),
-                };
-                tab.toggle_zoom();
-            }
-            SetPaneZoomState(zoomed) => {
-                let mux = Mux::get();
-                let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
-                    Some(tab) => tab,
-                    None => return Ok(PerformAssignmentResult::Handled),
-                };
-                tab.set_zoomed(*zoomed);
-            }
-            SwitchWorkspaceRelative(delta) => {
-                let mux = Mux::get();
-                let workspace = mux.active_workspace();
-                let workspaces = mux.iter_workspaces();
-                let idx = workspaces.iter().position(|w| *w == workspace).unwrap_or(0);
-                let new_idx = idx as isize + delta;
-                let new_idx = if new_idx < 0 {
-                    workspaces.len() as isize + new_idx
-                } else {
-                    new_idx
-                };
-                let new_idx = new_idx as usize % workspaces.len();
-                if let Some(w) = workspaces.get(new_idx) {
-                    front_end().switch_workspace(w);
-                }
-            }
-            SwitchToWorkspace { name, spawn } => {
-                let activity = crate::Activity::new();
-                let mux = Mux::get();
-                let name = name
-                    .as_ref()
-                    .map(|name| name.to_string())
-                    .unwrap_or_else(|| mux.generate_workspace_name());
-                let switcher = crate::frontend::WorkspaceSwitcher::new(&name);
-                mux.set_active_workspace(&name);
-
-                if mux.iter_windows_in_workspace(&name).is_empty() {
-                    let spawn = spawn.as_ref().map(|s| s.clone()).unwrap_or_default();
-                    let size = self.terminal_size;
-                    let term_config = Arc::new(TermConfig::with_config(self.config.clone()));
-                    let src_window_id = self.mux_window_id;
-
-                    promise::spawn::spawn(async move {
-                        if let Err(err) = crate::spawn::spawn_command_internal(
-                            spawn,
-                            SpawnWhere::NewWindow,
-                            size,
-                            Some(src_window_id),
-                            term_config,
-                        )
-                        .await
-                        {
-                            log::error!("Failed to spawn: {:#}", err);
-                        }
-                        switcher.do_switch();
-                        drop(activity);
-                    })
-                    .detach();
-                } else {
-                    switcher.do_switch();
-                }
-            }
-            DetachDomain(domain) => {
-                let domain = Mux::get().resolve_spawn_tab_domain(Some(pane.pane_id()), domain)?;
-                domain.detach()?;
-            }
-            AttachDomain(domain) => {
-                let window = self.mux_window_id;
-                let domain = domain.to_string();
-                let dpi = self.dimensions.dpi as u32;
-
-                promise::spawn::spawn(async move {
-                    let mux = Mux::get();
-                    let domain = mux
-                        .get_domain_by_name(&domain)
-                        .ok_or_else(|| anyhow!("{} is not a valid domain name", domain))?;
-                    domain.attach(Some(window)).await?;
-
-                    let have_panes_in_domain = mux
-                        .iter_panes()
-                        .iter()
-                        .any(|p| p.domain_id() == domain.domain_id());
-
-                    if !have_panes_in_domain {
-                        let config = config::configuration();
-                        let _tab = domain
-                            .spawn(
-                                config.initial_size(
-                                    dpi,
-                                    Some(crate::cell_pixel_dims(&config, dpi as f64)?),
-                                ),
-                                None,
-                                None,
-                                window,
-                            )
-                            .await?;
-                    }
-
-                    Result::<(), anyhow::Error>::Ok(())
-                })
-                .detach();
-            }
             CopyMode(_) => {
                 // NOP here; handled by the overlay directly
-            }
-            RotatePanes(direction) => {
-                let mux = Mux::get();
-                let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
-                    Some(tab) => tab,
-                    None => return Ok(PerformAssignmentResult::Handled),
-                };
-                match direction {
-                    RotationDirection::Clockwise => tab.rotate_clockwise(),
-                    RotationDirection::CounterClockwise => tab.rotate_counter_clockwise(),
-                }
-            }
-            SplitPane(split) => {
-                log::trace!("SplitPane {:?}", split);
-                self.spawn_command(
-                    &split.command,
-                    SpawnWhere::SplitPane(SplitRequest {
-                        direction: match split.direction {
-                            PaneDirection::Down | PaneDirection::Up => SplitDirection::Vertical,
-                            PaneDirection::Left | PaneDirection::Right => {
-                                SplitDirection::Horizontal
-                            }
-                            PaneDirection::Next | PaneDirection::Prev => {
-                                log::error!(
-                                    "Invalid direction {:?} for SplitPane",
-                                    split.direction
-                                );
-                                return Ok(PerformAssignmentResult::Handled);
-                            }
-                        },
-                        target_is_second: match split.direction {
-                            PaneDirection::Down | PaneDirection::Right => true,
-                            PaneDirection::Up | PaneDirection::Left => false,
-                            PaneDirection::Next | PaneDirection::Prev => unreachable!(),
-                        },
-                        size: match split.size {
-                            SplitSize::Percent(n) => MuxSplitSize::Percent(n),
-                            SplitSize::Cells(n) => MuxSplitSize::Cells(n),
-                        },
-                        top_level: split.top_level,
-                    }),
-                );
-            }
-            PaneSelect(args) => {
-                let modal = crate::termwindow::paneselect::PaneSelector::new(self, args);
-                self.set_modal(Rc::new(modal));
             }
             CharSelect(args) => {
                 let modal = crate::termwindow::charselect::CharSelector::new(self, args);
@@ -3155,10 +2988,6 @@ impl TermWindow {
             }
             OpenUri(link) => {
                 wezterm_open_url::open_url(link);
-            }
-            ActivateCommandPalette => {
-                let modal = crate::termwindow::palette::CommandPalette::new(self);
-                self.set_modal(Rc::new(modal));
             }
             PromptInputLine(args) => self.show_prompt_input_line(args),
             InputSelector(args) => self.show_input_selector(args),

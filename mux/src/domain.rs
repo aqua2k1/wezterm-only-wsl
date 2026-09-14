@@ -13,7 +13,7 @@ use crate::Mux;
 use anyhow::{bail, Context, Error};
 use async_trait::async_trait;
 use config::keyassignment::{SpawnCommand, SpawnTabDomain};
-use config::{configuration, ExecDomain, SerialDomain, ValueOrFunc, WslDomain};
+use config::{configuration, ExecDomain, ValueOrFunc, WslDomain};
 use downcast_rs::{impl_downcast, Downcast};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, ExitStatus, MasterPty, PtySize, PtySystem};
@@ -73,72 +73,12 @@ pub trait Domain: Downcast + Send + Sync {
 
     async fn split_pane(
         &self,
-        source: SplitSource,
-        tab: TabId,
-        pane_id: PaneId,
-        split_request: SplitRequest,
+        _source: SplitSource,
+        _tab: TabId,
+        _pane_id: PaneId,
+        _split_request: SplitRequest,
     ) -> anyhow::Result<Arc<dyn Pane>> {
-        let mux = Mux::get();
-        let tab = match mux.get_tab(tab) {
-            Some(t) => t,
-            None => anyhow::bail!("Invalid tab id {}", tab),
-        };
-
-        let pane_index = match tab
-            .iter_panes_ignoring_zoom()
-            .iter()
-            .find(|p| p.pane.pane_id() == pane_id)
-        {
-            Some(p) => p.index,
-            None => anyhow::bail!("invalid pane id {}", pane_id),
-        };
-
-        let split_size = match tab.compute_split_size(pane_index, split_request) {
-            Some(s) => s,
-            None => anyhow::bail!("invalid pane index {}", pane_index),
-        };
-
-        let pane = match source {
-            SplitSource::Spawn {
-                command,
-                command_dir,
-            } => {
-                self.spawn_pane(split_size.second, command, command_dir)
-                    .await?
-            }
-            SplitSource::MovePane(src_pane_id) => {
-                let (_domain, _window, src_tab) = mux
-                    .resolve_pane_id(src_pane_id)
-                    .ok_or_else(|| anyhow::anyhow!("pane {} not found", src_pane_id))?;
-                let src_tab = match mux.get_tab(src_tab) {
-                    Some(t) => t,
-                    None => anyhow::bail!("Invalid tab id {}", src_tab),
-                };
-
-                let pane = src_tab.remove_pane(src_pane_id).ok_or_else(|| {
-                    anyhow::anyhow!("pane {} not found in its containing tab!?", src_pane_id)
-                })?;
-
-                if src_tab.is_dead() {
-                    mux.remove_tab(src_tab.tab_id());
-                }
-
-                pane
-            }
-        };
-
-        // pane_index may have changed if src_pane was also in the same tab
-        let final_pane_index = match tab
-            .iter_panes_ignoring_zoom()
-            .iter()
-            .find(|p| p.pane.pane_id() == pane_id)
-        {
-            Some(p) => p.index,
-            None => anyhow::bail!("invalid pane id {}", pane_id),
-        };
-
-        tab.split_and_insert(final_pane_index, split_request, Arc::clone(&pane))?;
-        Ok(pane)
+        anyhow::bail!("pane splitting is disabled")
     }
 
     async fn spawn_pane(
@@ -158,7 +98,7 @@ pub trait Domain: Downcast + Send + Sync {
         _window_id: Option<WindowId>,
         _workspace_for_new_window: Option<String>,
     ) -> anyhow::Result<Option<(Arc<Tab>, WindowId)>> {
-        Ok(None)
+        anyhow::bail!("moving panes to a new tab is disabled")
     }
 
     /// Returns false if the `spawn` method will never succeed.
@@ -199,10 +139,32 @@ pub trait Domain: Downcast + Send + Sync {
 }
 impl_downcast!(Domain);
 
+#[cfg(test)]
+mod single_session_tests {
+    use super::*;
+
+    #[test]
+    fn wsl_definition_is_pinned_without_configuration_lookup() {
+        let domain = LocalDomain::new_wsl(WslDomain {
+            name: "WSL:Test".to_string(),
+            distribution: Some("TestDistro".to_string()),
+            default_prog: Some(vec!["/bin/bash".to_string()]),
+            ..Default::default()
+        })
+        .unwrap();
+        let selected = domain.resolve_wsl_domain().unwrap();
+        assert_eq!(selected.name, "WSL:Test");
+        assert_eq!(selected.distribution.as_deref(), Some("TestDistro"));
+        assert_eq!(selected.default_prog, Some(vec!["/bin/bash".to_string()]));
+        assert!(domain.resolve_exec_domain().is_none());
+    }
+}
+
 pub struct LocalDomain {
     pty_system: Mutex<Box<dyn PtySystem + Send>>,
     id: DomainId,
     name: String,
+    pinned_wsl: Option<WslDomain>,
 }
 
 impl LocalDomain {
@@ -211,6 +173,9 @@ impl LocalDomain {
     }
 
     fn resolve_exec_domain(&self) -> Option<ExecDomain> {
+        if self.pinned_wsl.is_some() {
+            return None;
+        }
         config::configuration()
             .exec_domains
             .iter()
@@ -219,6 +184,9 @@ impl LocalDomain {
     }
 
     fn resolve_wsl_domain(&self) -> Option<WslDomain> {
+        if let Some(wsl) = &self.pinned_wsl {
+            return Some(wsl.clone());
+        }
         config::configuration()
             .wsl_domains()
             .iter()
@@ -232,25 +200,20 @@ impl LocalDomain {
             pty_system: Mutex::new(pty_system),
             id,
             name: name.to_string(),
+            pinned_wsl: None,
         }
     }
 
     pub fn new_wsl(wsl: WslDomain) -> Result<Self, Error> {
-        Self::new(&wsl.name)
+        // A reload must not turn an already-selected WSL domain into a
+        // Windows shell or a same-named exec domain during async startup.
+        let mut domain = Self::new(&wsl.name)?;
+        domain.pinned_wsl = Some(wsl);
+        Ok(domain)
     }
 
     pub fn new_exec_domain(exec_domain: ExecDomain) -> anyhow::Result<Self> {
         Self::new(&exec_domain.name)
-    }
-
-    pub fn new_serial_domain(serial_domain: SerialDomain) -> anyhow::Result<Self> {
-        let port = serial_domain.port.as_ref().unwrap_or(&serial_domain.name);
-        let mut serial = portable_pty::serial::SerialTty::new(&port);
-        if let Some(baud) = serial_domain.baud {
-            serial.set_baud_rate(baud as u32);
-        }
-        let pty_system = Box::new(serial);
-        Ok(Self::with_pty_system(&serial_domain.name, pty_system))
     }
 
     #[cfg(unix)]
@@ -476,13 +439,8 @@ impl LocalDomain {
         if let Some(dir) = command_dir {
             cmd.cwd(dir);
         }
-        if let Ok(sock) = std::env::var("WEZTERM_UNIX_SOCKET") {
-            cmd.env("WEZTERM_UNIX_SOCKET", sock);
-        }
+        cmd.env_remove("WEZTERM_UNIX_SOCKET");
         cmd.env("WEZTERM_PANE", pane_id.to_string());
-        if let Some(agent) = Mux::get().agent.as_ref() {
-            cmd.env("SSH_AUTH_SOCK", agent.path());
-        }
         self.fixup_command(&mut cmd).await?;
         Ok(cmd)
     }
@@ -593,6 +551,12 @@ impl Domain for LocalDomain {
         command: Option<CommandBuilder>,
         command_dir: Option<String>,
     ) -> anyhow::Result<Arc<dyn Pane>> {
+        // Serialize the check through registration, including the async command
+        // builder, so concurrent requests cannot launch a second child.
+        let session_mux = Mux::get();
+        let _spawn_guard = session_mux.acquire_single_session_spawn_lock().await;
+        session_mux.ensure_single_session_spawn_allowed()?;
+
         let pane_id = alloc_pane_id();
         let cmd = self
             .build_command(command, command_dir, pane_id)

@@ -187,7 +187,6 @@ fn register_panic_hook() {
 
 fn register_lua_modules() {
     for func in [
-        battery::register,
         color_funcs::register,
         termwiz_funcs::register,
         logging::register,
@@ -195,8 +194,6 @@ fn register_lua_modules() {
         procinfo_funcs::register,
         filesystem::register,
         serde_funcs::register,
-        plugin::register,
-        ssh_funcs::register,
         spawn_funcs::register,
         share_data::register,
         time_funcs::register,

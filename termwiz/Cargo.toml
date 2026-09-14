@@ -48,7 +48,7 @@ wezterm-input-types.workspace = true
 wezterm-surface = {workspace = true, features=["std", "appdata"]}
 
 [features]
-default = ["image", "tmux_cc"]
+default = ["image"]
 widgets = ["cassowary", "fnv"]
 use_serde = ["serde", "wezterm-color-types/use_serde", "wezterm-blob-leases/serde", "bitflags/serde", "wezterm-input-types/serde", "wezterm-escape-parser/use_serde", "wezterm-cell/use_serde", "wezterm-surface/use_serde"]
 use_image = ["image", "dep:image", "wezterm-escape-parser/use_image", "wezterm-escape-parser/kitty-shm", "wezterm-cell/use_image", "wezterm-surface/use_image"]

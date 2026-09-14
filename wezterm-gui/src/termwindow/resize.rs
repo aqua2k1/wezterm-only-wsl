@@ -488,12 +488,8 @@ impl super::TermWindow {
             dpi: size.dpi,
         };
 
-        let show_tab_bar = config.enable_tab_bar && !config.hide_tab_bar_if_only_one_tab;
-        let tab_bar_height = if show_tab_bar {
-            self.tab_bar_pixel_height()? as usize
-        } else {
-            0
-        };
+        // The single-session GUI deliberately has no tab bar.
+        let tab_bar_height = 0usize;
 
         let h_context = DimensionContext {
             dpi: self.dimensions.dpi as f32,

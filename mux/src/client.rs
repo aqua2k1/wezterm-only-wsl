@@ -20,7 +20,6 @@ pub struct ClientId {
     pub pid: u32,
     pub epoch: u64,
     pub id: usize,
-    pub ssh_auth_sock: Option<String>,
 }
 
 impl ClientId {
@@ -30,11 +29,12 @@ impl ClientId {
             hostname: hostname::get()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|_| "localhost".to_string()),
-            username: config::username_from_env().unwrap_or_else(|_| "somebody".to_string()),
+            username: std::env::var("USERNAME")
+                .or_else(|_| std::env::var("USER"))
+                .unwrap_or_else(|_| "somebody".to_string()),
             pid: unsafe { libc::getpid() as u32 },
             epoch: *EPOCH,
             id,
-            ssh_auth_sock: crate::AgentProxy::default_ssh_auth_sock(),
         }
     }
 }

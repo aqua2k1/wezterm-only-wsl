@@ -9,7 +9,6 @@ publish = false
 
 [dependencies]
 backtrace.workspace = true
-battery.workspace = true
 chrono.workspace = true
 color-funcs.workspace = true
 config.workspace = true
@@ -21,12 +20,10 @@ libc.workspace = true
 log.workspace = true
 logging.workspace = true
 mux-lua.workspace = true
-plugin.workspace = true
 procinfo-funcs.workspace = true
 serde-funcs.workspace = true
 share-data.workspace = true
 spawn-funcs.workspace = true
-ssh-funcs.workspace = true
 termwiz-funcs.workspace = true
 termwiz.workspace = true
 time-funcs.workspace = true

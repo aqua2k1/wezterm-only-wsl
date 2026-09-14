@@ -231,10 +231,6 @@ pub fn make_lua_context(config_file: &Path) -> anyhow::Result<Lua> {
         for dir in crate::CONFIG_DIRS.iter() {
             prefix_path(&mut path_array, dir);
         }
-        path_array.insert(
-            2,
-            format!("{}/plugins/?/plugin/init.lua", crate::DATA_DIR.display()),
-        );
 
         if let Ok(exe) = std::env::current_exe() {
             if let Some(path) = exe.parent() {

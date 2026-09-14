@@ -63,8 +63,7 @@ impl Window {
         if workspace == self.workspace {
             return;
         }
-        self.workspace = workspace.to_string();
-        Mux::get().notify(MuxNotification::WindowWorkspaceChanged(self.id));
+        log::debug!("single-session mode: refusing to move window to workspace {workspace:?}");
     }
 
     pub fn window_id(&self) -> WindowId {

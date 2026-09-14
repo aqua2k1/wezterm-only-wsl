@@ -1,5 +1,4 @@
 use super::*;
-use mlua::UserDataRef;
 use mux::domain::{Domain, DomainId, DomainState};
 use std::sync::Arc;
 
@@ -26,31 +25,6 @@ impl UserData for MuxDomain {
             let mux = get_mux()?;
             let domain = this.resolve(&mux)?;
             Ok(domain.spawnable())
-        });
-
-        methods.add_async_method(
-            "attach",
-            |_, this, window: Option<UserDataRef<MuxWindow>>| async move {
-                let mux = get_mux()?;
-                let domain = this.resolve(&mux)?;
-                domain.attach(window.map(|w| w.0)).await.map_err(|err| {
-                    mlua::Error::external(format!(
-                        "failed to attach domain {}: {err:#}",
-                        domain.domain_name()
-                    ))
-                })
-            },
-        );
-
-        methods.add_method("detach", |_, this, _: ()| {
-            let mux = get_mux()?;
-            let domain = this.resolve(&mux)?;
-            domain.detach().map_err(|err| {
-                mlua::Error::external(format!(
-                    "failed to detach domain {}: {err:#}",
-                    domain.domain_name()
-                ))
-            })
         });
 
         methods.add_method("state", |_, this, _: ()| {

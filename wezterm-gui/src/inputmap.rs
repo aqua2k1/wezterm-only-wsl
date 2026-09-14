@@ -49,6 +49,11 @@ impl InputMap {
 
         if !config.disable_default_key_bindings {
             for (mods, code, action) in CommandDef::default_key_assignments(config) {
+                // Removed session-management shortcuts must not consume keys
+                // that the WSL application (including Kitty keyboard mode) can use.
+                if crate::termwindow::wsl_single_session_restriction(&action).is_some() {
+                    continue;
+                }
                 // If the user configures {key='p', mods='CTRL|SHIFT'} that gets
                 // normalized into {key='P', mods='CTRL'} in Config::key_bindings(),
                 // and that value exists in `keys.default` when we reach this point.

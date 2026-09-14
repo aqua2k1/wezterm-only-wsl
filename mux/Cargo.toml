@@ -36,7 +36,6 @@ procinfo.workspace = true
 promise.workspace = true
 rangeset.workspace = true
 serde = {workspace=true, features = ["rc", "derive"]}
-serial2.workspace = true
 shell-words.workspace = true
 smol.workspace = true
 terminfo.workspace = true
@@ -46,7 +45,6 @@ textwrap.workspace = true
 thiserror.workspace = true
 url.workspace = true
 wezterm-dynamic.workspace = true
-wezterm-ssh.workspace = true
 wezterm-term = { workspace=true, features=["use_serde"] }
 
 [target."cfg(windows)".dependencies]
