@@ -814,8 +814,8 @@ impl ParsedFont {
 }
 
 /// In case the user has a broken configuration, or no configuration,
-/// we bundle JetBrains Mono and Noto Color Emoji to act as reasonably
-/// sane fallback fonts.
+/// we bundle Fira Code, JetBrains Mono and Noto Color Emoji to act as
+/// reasonably sane fallback fonts.
 /// This function loads those.
 pub(crate) fn load_built_in_fonts(font_info: &mut Vec<ParsedFont>) -> anyhow::Result<()> {
     #[allow(unused_macros)]
@@ -827,6 +827,8 @@ pub(crate) fn load_built_in_fonts(font_info: &mut Vec<ParsedFont>) -> anyhow::Re
     let lib = crate::ftwrap::Library::new()?;
 
     let built_ins: &[&[(&[u8], &str)]] = &[
+        #[cfg(any(test, feature = "vendor-fira-code"))]
+        &[font!("../../assets/fonts/FiraCode-Regular.ttf")],
         #[cfg(any(test, feature = "vendor-jetbrains"))]
         &[
             font!("../../assets/fonts/JetBrainsMono-BoldItalic.ttf"),

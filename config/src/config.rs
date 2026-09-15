@@ -190,6 +190,7 @@ pub struct Config {
 
     /// Use a named color scheme rather than the palette specified
     /// by the colors setting.
+    #[dynamic(default = "default_color_scheme")]
     pub color_scheme: Option<String>,
 
     /// Named color schemes
@@ -1652,6 +1653,10 @@ fn default_term() -> String {
 
 fn default_font_size() -> f64 {
     12.0
+}
+
+fn default_color_scheme() -> Option<String> {
+    Some("GruvboxDark".to_string())
 }
 
 pub(crate) fn compute_cache_dir() -> anyhow::Result<PathBuf> {

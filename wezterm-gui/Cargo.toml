@@ -13,11 +13,13 @@ publish = false
 default = ["vendored-fonts"]
 distro-defaults = ["config/distro-defaults"]
 vendor-nerd-font-symbols-font = ["wezterm-font/vendor-nerd-font-symbols"]
+vendor-fira-code-font = ["wezterm-font/vendor-fira-code"]
 vendor-jetbrains-font = ["wezterm-font/vendor-jetbrains"]
 vendor-roboto-font = ["wezterm-font/vendor-roboto"]
 vendor-noto-emoji-font = ["wezterm-font/vendor-noto-emoji"]
 vendored-fonts = [
   "vendor-nerd-font-symbols-font",
+  "vendor-fira-code-font",
   "vendor-jetbrains-font",
   "vendor-roboto-font",
   "vendor-noto-emoji-font"

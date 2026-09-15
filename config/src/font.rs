@@ -443,7 +443,7 @@ impl FontAttributes {
 impl Default for FontAttributes {
     fn default() -> Self {
         Self {
-            family: "JetBrains Mono".into(),
+            family: "Fira Code".into(),
             weight: FontWeight::default(),
             stretch: FontStretch::default(),
             style: FontStyle::Normal,
@@ -599,8 +599,8 @@ impl TextStyle {
 
         let mut default_font = FontAttributes::default();
 
-        // Insert our bundled default JetBrainsMono as a fallback
-        // in case their preference doesn't match anything.
+        // Insert our bundled default Fira Code as a fallback in case
+        // their preference doesn't match anything.
         // But don't add it if it is already their preference.
         if !font.iter().any(|f| *f == default_font) {
             default_font.is_fallback = true;

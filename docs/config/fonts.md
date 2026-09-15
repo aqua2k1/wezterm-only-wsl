@@ -1,9 +1,11 @@
 ### Font Related Configuration
 
-WezTerm bundles [JetBrains Mono](https://www.jetbrains.com/lp/mono/),
+WezTerm bundles [Fira Code](https://github.com/tonsky/FiraCode),
+[JetBrains Mono](https://www.jetbrains.com/lp/mono/),
 [Nerd Font Symbols](https://nerdfonts.com) and
-[Noto Color Emoji](https://www.google.com/get/noto/help/emoji/) fonts
-and uses those for the default font configuration.
+[Noto Color Emoji](https://www.google.com/get/noto/help/emoji/) fonts.
+Fira Code is used as the default font, with Nerd Font Symbols available
+as a built-in fallback.
 
 If you wish to use a different font face, then you can use
 the [wezterm.font](lua/wezterm/font.md) function to specify it:
@@ -83,8 +85,8 @@ wezterm.font_with_fallback({
   -- /home/wez/.fonts/MaterialDesignIconsDesktop.ttf, FontDirs
   "Material Design Icons Desktop",
 
-  -- /usr/share/fonts/jetbrains-mono-fonts/JetBrainsMono-Regular.ttf, FontConfig
-  "JetBrains Mono",
+  -- built-in FiraCode-Regular.ttf, BuiltIn
+  "Fira Code",
 
   -- /usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf, FontConfig
   -- Assumed to have Emoji Presentation
@@ -101,8 +103,8 @@ wezterm.font_with_fallback({
   -- /home/wez/.fonts/MaterialDesignIconsDesktop.ttf, FontDirs
   "Material Design Icons Desktop",
 
-  -- /usr/share/fonts/jetbrains-mono-fonts/JetBrainsMono-Regular.ttf, FontConfig
-  "JetBrains Mono",
+  -- built-in FiraCode-Regular.ttf, BuiltIn
+  "Fira Code",
 
   -- /usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf, FontConfig
   -- Assumed to have Emoji Presentation
