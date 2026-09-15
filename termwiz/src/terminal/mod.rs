@@ -1,11 +1,17 @@
 //! An abstraction over a terminal device
 
+#[cfg(not(windows))]
+use crate::bail;
 use crate::caps::probed::ProbeCapabilities;
 use crate::caps::Capabilities;
+#[cfg(windows)]
+use crate::format_err;
 use crate::input::InputEvent;
 use crate::surface::Change;
-use crate::{format_err, Result};
+use crate::Result;
+#[cfg(windows)]
 use num_traits::NumCast;
+#[cfg(windows)]
 use std::fmt::Display;
 use std::time::Duration;
 
@@ -14,17 +20,17 @@ use serde::Deserialize;
 #[cfg(feature = "use_serde")]
 use serde::Serialize;
 
-#[cfg(unix)]
-pub mod unix;
 #[cfg(windows)]
 pub mod windows;
 
 pub mod buffered;
 
-#[cfg(unix)]
-pub use self::unix::{UnixTerminal, UnixTerminalWaker as TerminalWaker};
 #[cfg(windows)]
 pub use self::windows::{WindowsTerminal, WindowsTerminalWaker as TerminalWaker};
+
+#[cfg(not(windows))]
+#[derive(Debug, Clone, Copy)]
+pub struct TerminalWaker;
 
 /// Represents the size of the terminal screen.
 /// The number of rows and columns of character cells are expressed.
@@ -112,24 +118,73 @@ pub trait Terminal {
 /// Ideally you wouldn't reference `SystemTerminal` in consuming
 /// code.  This type is exposed for convenience if you are doing
 /// something unusual and want easier access to the constructors.
-#[cfg(unix)]
-pub type SystemTerminal = UnixTerminal;
 #[cfg(windows)]
 pub type SystemTerminal = WindowsTerminal;
+
+#[cfg(not(windows))]
+pub struct UnsupportedTerminal;
+#[cfg(not(windows))]
+pub type SystemTerminal = UnsupportedTerminal;
 
 /// Construct a new instance of Terminal.
 /// The terminal will have a renderer that is influenced by the configuration
 /// in the provided `Capabilities` instance.
-/// The terminal will explicitly open `/dev/tty` on Unix systems and
-/// `CONIN$` and `CONOUT$` on Windows systems, so that it should yield a
-/// functioning console with minimal headaches.
-/// If you have a more advanced use case you will want to look to the
-/// constructors for `UnixTerminal` and `WindowsTerminal` and call whichever
-/// one is most suitable for your needs.
+/// The Windows implementation explicitly opens `CONIN$` and `CONOUT$` so
+/// that it yields a functioning console with minimal headaches.
+#[cfg(windows)]
 pub fn new_terminal(caps: Capabilities) -> Result<impl Terminal> {
     SystemTerminal::new(caps)
 }
 
+#[cfg(not(windows))]
+pub fn new_terminal(_caps: Capabilities) -> Result<UnsupportedTerminal> {
+    bail!("this build only supports the Windows terminal backend")
+}
+
+#[cfg(not(windows))]
+impl Terminal for UnsupportedTerminal {
+    fn set_raw_mode(&mut self) -> Result<()> {
+        bail!("this build only supports the Windows terminal backend")
+    }
+
+    fn set_cooked_mode(&mut self) -> Result<()> {
+        bail!("this build only supports the Windows terminal backend")
+    }
+
+    fn enter_alternate_screen(&mut self) -> Result<()> {
+        bail!("this build only supports the Windows terminal backend")
+    }
+
+    fn exit_alternate_screen(&mut self) -> Result<()> {
+        bail!("this build only supports the Windows terminal backend")
+    }
+
+    fn get_screen_size(&mut self) -> Result<ScreenSize> {
+        bail!("this build only supports the Windows terminal backend")
+    }
+
+    fn set_screen_size(&mut self, _size: ScreenSize) -> Result<()> {
+        bail!("this build only supports the Windows terminal backend")
+    }
+
+    fn render(&mut self, _changes: &[Change]) -> Result<()> {
+        bail!("this build only supports the Windows terminal backend")
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        bail!("this build only supports the Windows terminal backend")
+    }
+
+    fn poll_input(&mut self, _wait: Option<Duration>) -> Result<Option<InputEvent>> {
+        bail!("this build only supports the Windows terminal backend")
+    }
+
+    fn waker(&self) -> TerminalWaker {
+        TerminalWaker
+    }
+}
+
+#[cfg(windows)]
 pub(crate) fn cast<T: NumCast + Display + Copy, U: NumCast>(n: T) -> Result<U> {
     num_traits::cast(n).ok_or_else(|| format_err!("{} is out of bounds for this system", n))
 }

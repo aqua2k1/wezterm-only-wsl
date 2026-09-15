@@ -39,8 +39,6 @@
 //!
 use anyhow::Error;
 use downcast_rs::{impl_downcast, Downcast};
-#[cfg(unix)]
-use libc;
 #[cfg(feature = "serde_support")]
 use serde::{Deserialize, Serialize};
 use std::io::Result as IoResult;
@@ -52,8 +50,6 @@ use windows_sys::Win32::System::Threading::TerminateProcess;
 pub mod cmdbuilder;
 pub use cmdbuilder::CommandBuilder;
 
-#[cfg(unix)]
-pub mod unix;
 #[cfg(windows)]
 pub mod win;
 
@@ -100,28 +96,6 @@ pub trait MasterPty: Downcast + Send {
     /// Dropping the writer will send EOF to the slave end.
     /// It is invalid to take the writer more than once.
     fn take_writer(&self) -> Result<Box<dyn std::io::Write + Send>, Error>;
-
-    /// If applicable to the type of the tty, return the local process id
-    /// of the process group or session leader
-    #[cfg(unix)]
-    fn process_group_leader(&self) -> Option<libc::pid_t>;
-
-    /// If get_termios() and process_group_leader() are both implemented and
-    /// return Some, then as_raw_fd() should return the same underlying fd
-    /// associated with the stream. This is to enable applications that
-    /// "know things" to query similar information for themselves.
-    #[cfg(unix)]
-    fn as_raw_fd(&self) -> Option<unix::RawFd>;
-
-    #[cfg(unix)]
-    fn tty_name(&self) -> Option<std::path::PathBuf>;
-
-    /// If applicable to the type of the tty, return the termios
-    /// associated with the stream
-    #[cfg(unix)]
-    fn get_termios(&self) -> Option<nix::sys::termios::Termios> {
-        None
-    }
 }
 impl_downcast!(MasterPty);
 
@@ -169,71 +143,34 @@ pub trait SlavePty {
 #[derive(Debug, Clone)]
 pub struct ExitStatus {
     code: u32,
-    signal: Option<String>,
 }
 
 impl ExitStatus {
     /// Construct an ExitStatus from a process return code
     pub fn with_exit_code(code: u32) -> Self {
-        Self { code, signal: None }
-    }
-
-    /// Construct an ExitStatus from a signal name
-    pub fn with_signal(signal: &str) -> Self {
-        Self {
-            code: 1,
-            signal: Some(signal.to_string()),
-        }
+        Self { code }
     }
 
     /// Returns true if the status indicates successful completion
     pub fn success(&self) -> bool {
-        match self.signal {
-            None => self.code == 0,
-            Some(_) => false,
-        }
+        self.code == 0
     }
 
     /// Returns the exit code that this ExitStatus was constructed with
     pub fn exit_code(&self) -> u32 {
         self.code
     }
-
-    /// Returns the signal if present that this ExitStatus was constructed with
-    pub fn signal(&self) -> Option<&str> {
-        self.signal.as_deref()
-    }
 }
 
 impl From<std::process::ExitStatus> for ExitStatus {
     fn from(status: std::process::ExitStatus) -> ExitStatus {
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::ExitStatusExt;
-
-            if let Some(signal) = status.signal() {
-                let signame = unsafe { libc::strsignal(signal) };
-                let signal = if signame.is_null() {
-                    format!("Signal {}", signal)
-                } else {
-                    let signame = unsafe { std::ffi::CStr::from_ptr(signame) };
-                    signame.to_string_lossy().to_string()
-                };
-
-                return ExitStatus {
-                    code: status.code().map(|c| c as u32).unwrap_or(1),
-                    signal: Some(signal),
-                };
-            }
-        }
-
         let code =
             status
                 .code()
                 .map(|c| c as u32)
                 .unwrap_or_else(|| if status.success() { 0 } else { 1 });
 
-        ExitStatus { code, signal: None }
+        ExitStatus { code }
     }
 }
 
@@ -242,10 +179,7 @@ impl std::fmt::Display for ExitStatus {
         if self.success() {
             write!(fmt, "Success")
         } else {
-            match &self.signal {
-                Some(sig) => write!(fmt, "Terminated by {}", sig),
-                None => write!(fmt, "Exited with code {}", self.code),
-            }
+            write!(fmt, "Exited with code {}", self.code)
         }
     }
 }
@@ -290,6 +224,7 @@ impl Child for std::process::Child {
     }
 }
 
+#[cfg(windows)]
 #[derive(Debug)]
 struct ProcessSignaller {
     pid: Option<u32>,
@@ -318,55 +253,8 @@ impl ChildKiller for ProcessSignaller {
     }
 }
 
-#[cfg(unix)]
-impl ChildKiller for ProcessSignaller {
-    fn kill(&mut self) -> IoResult<()> {
-        if let Some(pid) = self.pid {
-            let result = unsafe { libc::kill(pid as i32, libc::SIGHUP) };
-            if result != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-        }
-        Ok(())
-    }
-
-    fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
-        Box::new(Self { pid: self.pid })
-    }
-}
-
 impl ChildKiller for std::process::Child {
     fn kill(&mut self) -> IoResult<()> {
-        #[cfg(unix)]
-        {
-            // On unix, we send the SIGHUP signal instead of trying to kill
-            // the process. The default behavior of a process receiving this
-            // signal is to be killed unless it configured a signal handler.
-            let result = unsafe { libc::kill(self.id() as i32, libc::SIGHUP) };
-            if result != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-
-            // We successfully delivered SIGHUP, but the semantics of Child::kill
-            // are that on success the process is dead or shortly about to
-            // terminate.  Since SIGUP doesn't guarantee termination, we
-            // give the process a bit of a grace period to shutdown or do whatever
-            // it is doing in its signal handler befre we proceed with the
-            // full on kill.
-            for attempt in 0..5 {
-                if attempt > 0 {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-
-                if let Ok(Some(_)) = self.try_wait() {
-                    // It completed, so report success!
-                    return Ok(());
-                }
-            }
-
-            // it's still alive after a grace period, so proceed with a kill
-        }
-
         std::process::Child::kill(self)
     }
 
@@ -387,11 +275,24 @@ impl ChildKiller for std::process::Child {
         })
     }
 
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
-        Box::new(ProcessSignaller {
-            pid: self.process_id(),
-        })
+        Box::new(UnsupportedChildKiller)
+    }
+}
+
+#[cfg(not(windows))]
+#[derive(Debug)]
+struct UnsupportedChildKiller;
+
+#[cfg(not(windows))]
+impl ChildKiller for UnsupportedChildKiller {
+    fn kill(&mut self) -> IoResult<()> {
+        Ok(())
+    }
+
+    fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+        Box::new(Self)
     }
 }
 
@@ -399,7 +300,18 @@ pub fn native_pty_system() -> Box<dyn PtySystem + Send> {
     Box::new(NativePtySystem::default())
 }
 
-#[cfg(unix)]
-pub type NativePtySystem = unix::UnixPtySystem;
+#[cfg(not(windows))]
+#[derive(Default)]
+pub struct UnsupportedPtySystem;
+
+#[cfg(not(windows))]
+impl PtySystem for UnsupportedPtySystem {
+    fn openpty(&self, _size: PtySize) -> anyhow::Result<PtyPair> {
+        anyhow::bail!("this build only supports the Windows ConPTY backend")
+    }
+}
+
+#[cfg(not(windows))]
+pub type NativePtySystem = UnsupportedPtySystem;
 #[cfg(windows)]
 pub type NativePtySystem = win::conpty::ConPtySystem;

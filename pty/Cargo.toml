@@ -4,7 +4,7 @@ version = "0.9.0"
 authors = ["Wez Furlong"]
 edition = "2018"
 repository = "https://github.com/wezterm/wezterm"
-description = "Cross platform pty interface"
+description = "Windows ConPTY interface"
 license = "MIT"
 documentation = "https://docs.rs/portable-pty"
 
@@ -12,9 +12,7 @@ documentation = "https://docs.rs/portable-pty"
 anyhow.workspace = true
 downcast-rs.workspace = true
 filedescriptor.workspace = true
-libc.workspace = true
 log.workspace = true
-nix = {workspace=true, features=["term", "fs"]}
 serde = {workspace=true, optional=true, features=["derive"]}
 shell-words.workspace = true
 

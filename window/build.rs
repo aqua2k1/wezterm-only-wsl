@@ -14,21 +14,7 @@ fn main() {
         (1, 5),
         Profile::Core,
         Fallbacks::All,
-        [
-            "EGL_KHR_create_context",
-            "EGL_EXT_create_context_robustness",
-            "EGL_KHR_create_context_no_error",
-            "EGL_KHR_platform_x11",
-            "EGL_KHR_platform_android",
-            "EGL_KHR_platform_wayland",
-            "EGL_KHR_platform_gbm",
-            "EGL_EXT_platform_base",
-            "EGL_EXT_platform_x11",
-            "EGL_MESA_platform_gbm",
-            "EGL_EXT_platform_wayland",
-            "EGL_EXT_platform_device",
-            "EGL_KHR_swap_buffers_with_damage",
-        ],
+        ["EGL_EXT_create_context_robustness"],
     );
 
     if target.contains("android") || target.contains("ios") {
@@ -37,10 +23,6 @@ fn main() {
         reg.write_bindings(gl_generator::StructGenerator, &mut file)
     }
     .unwrap();
-
-    if target.contains("apple") {
-        println!("cargo:rustc-link-lib=framework=Carbon");
-    }
 
     if target.contains("windows") {
         let mut file = File::create(dest.join("wgl_bindings.rs")).unwrap();

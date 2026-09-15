@@ -4,7 +4,7 @@ name = "termwiz"
 version = "0.24.0"
 edition = "2018"
 repository = "https://github.com/wezterm/wezterm"
-description = "Terminal Wizardry for Unix and Windows"
+description = "Terminal Wizardry for the Windows console"
 license = "MIT"
 documentation = "https://docs.rs/termwiz"
 keywords = ["terminal", "readline", "console", "curses"]
@@ -20,7 +20,6 @@ finl_unicode.workspace = true
 fixedbitset.workspace = true
 fnv = {workspace=true, optional=true}
 image = {workspace=true, optional=true}
-libc.workspace = true
 log.workspace = true
 memmem.workspace = true
 num-derive.workspace = true
@@ -57,11 +56,6 @@ docs = ["widgets", "use_serde", "image"]
 criterion.workspace = true
 env_logger.workspace = true
 k9.workspace = true
-
-[target."cfg(unix)".dependencies]
-signal-hook.workspace = true
-termios.workspace = true
-nix = {workspace=true, features=["mman", "fs"]}
 
 [target."cfg(windows)".dependencies]
 windows-sys = { workspace = true, features = [

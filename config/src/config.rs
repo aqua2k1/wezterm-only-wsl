@@ -1516,8 +1516,6 @@ impl Config {
             cmd.env("WSLENV", wsl_env);
         }
 
-        #[cfg(unix)]
-        cmd.umask(umask::UmaskSaver::saved_umask());
         cmd.env("TERM", &self.term);
         cmd.env("COLORTERM", "truecolor");
         // TERM_PROGRAM and TERM_PROGRAM_VERSION are an emerging

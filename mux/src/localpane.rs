@@ -57,63 +57,6 @@ struct CachedProcInfo {
     foreground: LocalProcessInfo,
 }
 
-/// This is a bit horrible; it can take 700us to tcgetpgrp, so if we have
-/// 10 tabs open and run the mouse over them, hovering them each in turn,
-/// we can spend 7ms per evaluation of the tab bar state on fetching those
-/// pids alone, which can easily lead to stuttering when moving the mouse
-/// over all of the tabs.
-///
-/// This implements a cache holding that fg process and the often queried
-/// cwd and process path that allows for stale reads to proceed quickly
-/// while the writes can happen in a background thread.
-#[cfg(unix)]
-#[derive(Clone)]
-struct CachedLeaderInfo {
-    updated: Instant,
-    fd: std::os::fd::RawFd,
-    pid: u32,
-    path: Option<std::path::PathBuf>,
-    current_working_dir: Option<std::path::PathBuf>,
-    updating: bool,
-}
-
-#[cfg(unix)]
-impl CachedLeaderInfo {
-    fn new(fd: Option<std::os::fd::RawFd>) -> Self {
-        let mut me = Self {
-            updated: Instant::now(),
-            fd: fd.unwrap_or(-1),
-            pid: 0,
-            path: None,
-            current_working_dir: None,
-            updating: false,
-        };
-        me.update();
-        me
-    }
-
-    fn can_update(&self) -> bool {
-        self.fd != -1 && !self.updating
-    }
-
-    fn update(&mut self) {
-        self.pid = unsafe { libc::tcgetpgrp(self.fd) } as u32;
-        if self.pid > 0 {
-            self.path = LocalProcessInfo::executable_path(self.pid);
-            self.current_working_dir = LocalProcessInfo::current_working_dir(self.pid);
-        } else {
-            self.path.take();
-            self.current_working_dir.take();
-        }
-        self.updated = Instant::now();
-        self.updating = false;
-    }
-
-    fn expired(&self) -> bool {
-        self.updated.elapsed() > PROC_INFO_CACHE_TTL
-    }
-}
-
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum LocalPaneConnectionState {
     Connecting,
@@ -128,8 +71,6 @@ pub struct LocalPane {
     writer: Mutex<Box<dyn Write + Send>>,
     domain_id: DomainId,
     proc_list: Mutex<Option<CachedProcInfo>>,
-    #[cfg(unix)]
-    leader: Arc<Mutex<Option<CachedLeaderInfo>>>,
     command_description: String,
 }
 
@@ -140,25 +81,7 @@ impl Pane for LocalPane {
     }
 
     fn get_metadata(&self) -> Value {
-        #[allow(unused_mut)]
-        let mut map: BTreeMap<Value, Value> = BTreeMap::new();
-
-        #[cfg(unix)]
-        if let Some(tio) = self.pty.lock().get_termios() {
-            use nix::sys::termios::LocalFlags;
-            // Detect whether we might be in password input mode.
-            // If local echo is disabled and canonical input mode
-            // is enabled, then we assume that we're in some kind
-            // of password-entry mode.
-            let pw_input = !tio.local_flags.contains(LocalFlags::ECHO)
-                && tio.local_flags.contains(LocalFlags::ICANON);
-            map.insert(
-                Value::String("password_input".to_string()),
-                Value::Bool(pw_input),
-            );
-        }
-
-        Value::Object(map.into())
+        Value::Object(BTreeMap::new().into())
     }
 
     fn get_cursor_position(&self) -> StableCursorPosition {
@@ -480,44 +403,16 @@ impl Pane for LocalPane {
     }
 
     fn tty_name(&self) -> Option<String> {
-        #[cfg(unix)]
-        {
-            let name = self.pty.lock().tty_name()?;
-            Some(name.to_string_lossy().into_owned())
-        }
-
-        #[cfg(windows)]
-        {
-            None
-        }
+        None
     }
 
     fn get_foreground_process_info(&self, policy: CachePolicy) -> Option<LocalProcessInfo> {
-        #[cfg(unix)]
-        if let Some(pid) = self.pty.lock().process_group_leader() {
-            return LocalProcessInfo::with_root_pid(pid as u32);
-        }
-
         self.divine_foreground_process(policy)
     }
 
     fn get_foreground_process_name(&self, policy: CachePolicy) -> Option<String> {
-        #[cfg(unix)]
-        {
-            let leader = self.get_leader(policy);
-            if let Some(path) = &leader.path {
-                return Some(path.to_string_lossy().to_string());
-            }
-            return None;
-        }
-
-        #[cfg(windows)]
-        if let Some(fg) = self.divine_foreground_process(policy) {
-            return Some(fg.executable.to_string_lossy().to_string());
-        }
-
-        #[allow(unreachable_code)]
-        None
+        self.divine_foreground_process(policy)
+            .map(|fg| fg.executable.to_string_lossy().into_owned())
     }
 
     fn can_close_without_prompting(&self, _reason: CloseReason) -> bool {
@@ -586,16 +481,6 @@ impl Pane for LocalPane {
 
             !is_stateful
         } else {
-            #[cfg(unix)]
-            {
-                // If the process is dead but exit_behavior is holding the
-                // window, we don't need to prompt to confirm closing.
-                // That is detectable as no longer having a process group leader.
-                if self.pty.lock().process_group_leader().is_none() {
-                    return true;
-                }
-            }
-
             false
         }
     }
@@ -913,55 +798,13 @@ impl LocalPane {
             writer: Mutex::new(writer),
             domain_id,
             proc_list: Mutex::new(None),
-            #[cfg(unix)]
-            leader: Arc::new(Mutex::new(None)),
             command_description,
         }
     }
 
-    #[cfg(unix)]
-    fn get_leader(&self, policy: CachePolicy) -> CachedLeaderInfo {
-        let mut leader = self.leader.lock();
-
-        if policy == CachePolicy::FetchImmediate {
-            leader.replace(CachedLeaderInfo::new(self.pty.lock().as_raw_fd()));
-        } else if let Some(info) = leader.as_mut() {
-            // If stale, queue up some work in another thread to update.
-            // Right now, we'll return the stale data.
-            if info.expired() && info.can_update() {
-                info.updating = true;
-                let leader_ref = Arc::clone(&self.leader);
-                std::thread::spawn(move || {
-                    let mut leader = leader_ref.lock();
-                    if let Some(leader) = leader.as_mut() {
-                        leader.update();
-                    }
-                });
-            }
-        } else {
-            leader.replace(CachedLeaderInfo::new(self.pty.lock().as_raw_fd()));
-        }
-
-        (*leader).clone().unwrap()
-    }
-
     fn divine_current_working_dir(&self, policy: CachePolicy) -> Option<Url> {
-        #[cfg(unix)]
-        {
-            let leader = self.get_leader(policy);
-            if let Some(path) = &leader.current_working_dir {
-                return Url::from_directory_path(path).ok();
-            }
-            return None;
-        }
-
-        #[cfg(windows)]
-        if let Some(fg) = self.divine_foreground_process(policy) {
-            return Url::from_directory_path(fg.cwd).ok();
-        }
-
-        #[allow(unreachable_code)]
-        None
+        self.divine_foreground_process(policy)
+            .and_then(|fg| Url::from_directory_path(fg.cwd).ok())
     }
 
     fn divine_process_list(

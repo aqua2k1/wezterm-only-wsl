@@ -58,11 +58,13 @@ on applications that do not request it.
 
 - GUI SSH/serial/connect and normal remote startup/discovery/listener paths.
 - `wezterm`, `wezterm-client`, `wezterm-mux-server`,
-  `wezterm-mux-server-impl`, `codec`, `wezterm-ssh`, and `async_ossl` crates.
+  `wezterm-mux-server-impl`, `codec`, `wezterm-ssh`, `async_ossl`, and
+  `wezterm-uds` crates.
 - SSH agent forwarding, serial PTY, SSH/TLS/serial configuration schemas,
   ExecDomain/Lua exec-domain callbacks, and tmux control-mode integration
   (ordinary tmux inside WSL still works).
-- Unix-socket domain configuration, daemon/server settings, and obsolete
+- Unix-socket domain configuration, daemon/server settings, Windows context-menu
+  integration, and obsolete
   `unix_domains`, `default_mux_server_domain`,
   `ratelimit_mux_line_prefetches_per_second`, and `mux_env_remove` fields.
 - GUI update checker, iTerm file-download delivery, and its Downloads-folder
@@ -74,6 +76,8 @@ on applications that do not request it.
   native-window reassignment notifications, and dead command metadata. Each window now captures its
   fixed session ID directly, without locking an ID mutex on every mux event.
 - Multi-session split/move implementation paths in the local mux layer.
+- X11, Wayland, macOS window backends; Unix terminal and Unix PTY backends.
+  Windows builds now use only the native window and ConPTY implementations.
 
 One internal pane/tab/window wrapper remains for terminal state, I/O lifecycle,
 resizing, and rendering. Tabs, splits, workspaces, and extra GUI windows within
@@ -112,15 +116,16 @@ code is separate from this packaging cleanup.
 
 ## Validation before distribution
 
-The changes have been checked with Linux unit tests and a Windows GNU
-cross-target `cargo check`. The WSL-native harness in `tools/perf/` can launch
+The Windows-only backend crop has been checked with platform-neutral library
+checks and a Windows GNU cross-target `cargo check`; the Linux GUI target is no
+longer supported. The WSL-native harness in `tools/perf/` can launch
 both native Windows renderers through WSL interop; it does not invoke
 PowerShell/cmd.exe. It measures WSL/ConPTY throughput and WSL worker CPU/RSS,
 not Windows GUI CPU, GPU VRAM, or present timing. Neither this harness nor the
 cross-check is MSVC release-build validation.
 
-A Linux `cargo check` is not Windows runtime validation. On the target Windows
-machine, verify:
+The Windows GNU cross-check is not Windows runtime or MSVC validation. On the
+target Windows machine, verify:
 
 - Default and explicitly selected WSL distro startup; failed/missing distro.
 - Close, child exit, resize, DPI changes, and repeated independent launches.
@@ -136,12 +141,12 @@ machine, verify:
   still required for GUI CPU, VRAM, present timing, and input-to-photon latency.
   Choose a backend only after those measurements.
 
-Measure WSL cold startup separately from GUI startup. The latest packaging
-comparison is recorded in
-`docs-internal/windows-wsl-performance-packaging-20260915-v2.md` (and its JSON
-companion). It compares the prior candidate with the latest crop: OpenGL
-startup median improved from 831.6 ms to 800.3 ms; text/image throughput stayed
-within roughly ±3.5%. This is WSL/ConPTY data, not a Windows GUI or GPU
-benchmark, so it does not select OpenGL over WebGPU. Preserve glyph/shape/image
-caches until native profiling justifies changes. No speedup percentage is
-claimed beyond the stated harness measurements.
+Measure WSL cold startup separately from GUI startup. The latest Windows-only backend comparison is recorded in
+`docs-internal/windows-wsl-performance-platform-20260915.md` (and its JSON
+companion). It compares the platform-crop baseline with the latest build: the
+executable changes from 68.47 MiB to 68.46 MiB, and Kitty throughput changes by
++1.2% on OpenGL and +1.9% on WebGPU. Text throughput remains within roughly
+±6.5%. This is WSL/ConPTY data, not a Windows GUI or GPU benchmark, so it does
+not select OpenGL over WebGPU. Preserve glyph/shape/image caches until native
+profiling justifies changes. No speedup percentage is claimed beyond the stated
+harness measurements.

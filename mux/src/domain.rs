@@ -281,21 +281,6 @@ impl portable_pty::MasterPty for FailedSpawnPty {
     fn take_writer(&self) -> anyhow::Result<Box<dyn std::io::Write + Send + 'static>> {
         self.inner.lock().take_writer()
     }
-
-    #[cfg(unix)]
-    fn process_group_leader(&self) -> Option<i32> {
-        None
-    }
-
-    #[cfg(unix)]
-    fn as_raw_fd(&self) -> Option<std::os::fd::RawFd> {
-        None
-    }
-
-    #[cfg(unix)]
-    fn tty_name(&self) -> Option<std::path::PathBuf> {
-        None
-    }
 }
 
 /// A fake child process for the case where the spawn attempt

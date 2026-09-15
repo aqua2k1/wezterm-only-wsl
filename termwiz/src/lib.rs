@@ -25,7 +25,7 @@
 //! * `Capabilities` allows probing for terminal capabilities
 //!   that may not be included in the system terminfo database,
 //!   and overriding them in an embedding application.
-//! * `Terminal` trait provides an abstraction over unix style ttys
+//! * `Terminal` trait provides an abstraction over the Windows console
 //!   and Windows style console APIs.  `Change`s from `Surface`
 //!   can be rendered to `Terminal`s.  `Terminal`s allow decoding
 //!   mouse and keyboard inputs in both blocking or non-blocking
@@ -33,7 +33,7 @@
 //! * `Widget` trait allows composition of UI elements at a higher
 //!   level.
 //! * `LineEditor` provides line editing facilities similar to those
-//!   in the unix shell.
+//!   in the WSL shell.
 //!
 //! ## Features
 //!
