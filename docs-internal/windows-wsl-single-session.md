@@ -58,11 +58,19 @@ on applications that do not request it.
 - `wezterm`, `wezterm-client`, `wezterm-mux-server`,
   `wezterm-mux-server-impl`, `codec`, `wezterm-ssh`, and `async_ossl` crates.
 - SSH agent forwarding, serial PTY, SSH/TLS/serial configuration schemas,
-  and tmux control-mode integration (ordinary tmux inside WSL still works).
-- GUI update checker.
+  ExecDomain/Lua exec-domain callbacks, and tmux control-mode integration
+  (ordinary tmux inside WSL still works).
+- Unix-socket domain configuration, daemon/server settings, and obsolete
+  `unix_domains`, `default_mux_server_domain`,
+  `ratelimit_mux_line_prefetches_per_second`, and `mux_env_remove` fields.
+- GUI update checker, iTerm file-download delivery, and its Downloads-folder
+  bridge. Kitty graphics remains available; this is not Kitty image storage.
 - Battery, Git plugin manager, and SSH Lua API crates and registration.
 - GUI session-management actions, command palette, pane selector, secondary
   session spawning, and Lua session-creation/mutation APIs.
+- The launcher overlay, tab navigator and tab-move helpers, workspace switcher,
+  native-window reassignment notifications, and dead command metadata. Each window now captures its
+  fixed session ID directly, without locking an ID mutex on every mux event.
 - Multi-session split/move implementation paths in the local mux layer.
 
 One internal pane/tab/window wrapper remains for terminal state, I/O lifecycle,
@@ -85,7 +93,8 @@ one. Removing SSH and the plugin manager does not remove the `git2` build
 dependency used by version generation or its possible HTTPS/OpenSSL dependencies.
 Some internal multi-session data structures and unused UI modules/configuration
 fields remain and need further extraction. Old configurations using removed
-SSH/TLS/serial fields or Lua APIs must be updated; they are not silently accepted.
+SSH/TLS/serial/Unix-domain and server-only fields or Lua APIs must be updated;
+these interfaces are no longer supported.
 
 Kitty keyboard and graphics code is retained, including shared image/cache and
 GPU rendering paths. Sixel/iTerm image handlers have not yet been removed.
@@ -102,8 +111,11 @@ Windows runtime path and is not a priority.
 ## Validation before distribution
 
 The changes have been checked with Linux unit tests and a Windows GNU
-cross-target `cargo check`. Neither is Windows runtime or MSVC release-build
-validation. No distributable Windows binary or performance result is claimed.
+cross-target `cargo check`. The WSL-native harness in `tools/perf/` can launch
+both native Windows renderers through WSL interop; it does not invoke
+PowerShell/cmd.exe. It measures WSL/ConPTY throughput and WSL worker CPU/RSS,
+not Windows GUI CPU, GPU VRAM, or present timing. Neither this harness nor the
+cross-check is MSVC release-build validation.
 
 A Linux `cargo check` is not Windows runtime validation. On the target Windows
 machine, verify:
@@ -117,7 +129,13 @@ machine, verify:
 - Kitty keyboard negotiation, modifiers, press/repeat/release events.
 - Kitty graphics transfer, placement, scrolling, deletion, and repeated updates.
 - OpenGL versus WebGPU: text throughput, mixed text/image workload, input latency,
-  idle CPU, memory/VRAM, and startup time. Choose a backend after comparison.
+  idle CPU, memory/VRAM, and startup time. The WSL harness covers throughput,
+  startup acknowledgment, and WSL worker CPU/RSS; native Windows tooling is
+  still required for GUI CPU, VRAM, present timing, and input-to-photon latency.
+  Choose a backend only after those measurements.
 
-Measure WSL cold startup separately from GUI startup. Preserve glyph/shape/image
-caches until profiling justifies changes. No speedup percentage is claimed.
+Measure WSL cold startup separately from GUI startup. The first WSL-native
+comparison is recorded in `docs-internal/windows-wsl-performance-20260915.md`
+(and its JSON companion); its Kitty/OpenGL variance is large enough that it is
+not a backend-selection result. Preserve glyph/shape/image caches until
+profiling justifies changes. No speedup percentage is claimed.

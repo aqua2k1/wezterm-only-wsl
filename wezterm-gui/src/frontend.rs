@@ -1,28 +1,23 @@
 use crate::scripting::guiwin::GuiWin;
-use crate::termwindow::TermWindowNotif;
 use crate::TermWindow;
 use ::window::*;
-use anyhow::{Context, Error};
-use config::{ConfigSubscription, NotificationHandling};
-use mux::client::ClientId;
+use anyhow::Context;
+use config::NotificationHandling;
 use mux::window::WindowId as MuxWindowId;
 use mux::{Mux, MuxNotification};
 use promise::{Future, Promise};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use std::rc::Rc;
-use std::sync::Arc;
 use wezterm_term::{Alert, ClipboardSelection};
 use wezterm_toast_notification::*;
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub struct GuiFrontEnd {
     connection: Rc<Connection>,
-    switching_workspaces: RefCell<bool>,
     spawned_mux_window: RefCell<HashSet<MuxWindowId>>,
     known_windows: RefCell<BTreeMap<Window, MuxWindowId>>,
-    client_id: Arc<ClientId>,
     single_session_workspace: String,
-    config_subscription: RefCell<Option<ConfigSubscription>>,
 }
 
 impl Drop for GuiFrontEnd {
@@ -31,50 +26,27 @@ impl Drop for GuiFrontEnd {
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 impl GuiFrontEnd {
     pub fn try_new() -> anyhow::Result<Rc<GuiFrontEnd>> {
         let connection = Connection::init()?;
-        connection.set_event_handler(Self::app_event_handler);
-
         let mux = Mux::get();
         let client_id = mux.active_identity().expect("to have set my own id");
-        let single_session_workspace = mux.active_workspace_for_client(&client_id);
+        let single_session_workspace = mux.active_workspace();
 
         let front_end = Rc::new(GuiFrontEnd {
             connection,
-            switching_workspaces: RefCell::new(false),
             spawned_mux_window: RefCell::new(HashSet::new()),
             known_windows: RefCell::new(BTreeMap::new()),
-            client_id: client_id.clone(),
             single_session_workspace,
-            config_subscription: RefCell::new(None),
         });
 
         mux.subscribe(move |n| {
             match n {
-                MuxNotification::WorkspaceRenamed {
-                    old_workspace,
-                    new_workspace,
-                } => {
-                    let mux = Mux::get();
-                    let active = mux.active_workspace();
-                    if active == old_workspace || active == new_workspace {
-                        let switcher = WorkspaceSwitcher::new(&new_workspace);
-                        promise::spawn::spawn_into_main_thread(async move {
-                            drop(switcher);
-                        })
-                        .detach();
-                    }
-                }
-                MuxNotification::WindowWorkspaceChanged(_)
-                | MuxNotification::ActiveWorkspaceChanged(_)
-                | MuxNotification::WindowCreated(_)
-                | MuxNotification::WindowRemoved(_) => {
+                MuxNotification::WindowCreated(_) | MuxNotification::WindowRemoved(_) => {
                     promise::spawn::spawn_into_main_thread(async move {
                         let fe = crate::frontend::front_end();
-                        if !fe.is_switching_workspace() {
-                            fe.reconcile_workspace();
-                        }
+                        fe.reconcile_workspace();
                     })
                     .detach();
                 }
@@ -162,17 +134,6 @@ impl GuiFrontEnd {
                     })
                     .detach();
                 }
-                MuxNotification::SaveToDownloads { name, data } => {
-                    if !config::configuration().allow_download_protocols {
-                        log::error!(
-                            "Ignoring download request for {:?}, \
-                                 as allow_download_protocols=false",
-                            name
-                        );
-                    } else if let Err(err) = crate::download::save_to_downloads(name, &*data) {
-                        log::error!("save_to_downloads: {:#}", err);
-                    }
-                }
                 MuxNotification::AssignClipboard {
                     pane_id,
                     selection,
@@ -205,33 +166,7 @@ impl GuiFrontEnd {
             }
             true
         });
-        // Re-evaluate the config so that folks that are using
-        // `wezterm.gui.get_appearance()` can have that take effect
-        // before any windows are created
-        config::reload();
-
-        // And build the initial menu bar.
-        // TODO: arrange for this to happen on config reload.
-        crate::commands::CommandDef::recreate_menubar(&config::configuration());
-
         Ok(front_end)
-    }
-
-    fn app_event_handler(event: ApplicationEvent) {
-        log::trace!("Got app event {event:?}");
-        match event {
-            ApplicationEvent::OpenCommandScript(file_name) => {
-                log::error!(
-                    "ignoring OpenCommandScript {:?}: the single-session GUI does not create sessions",
-                    file_name
-                );
-            }
-            ApplicationEvent::PerformKeyAssignment(action) => {
-                log::error!(
-                    "ignoring application key assignment in the single-session GUI: {action:?}"
-                );
-            }
-        }
     }
 
     pub fn run_forever(&self) -> anyhow::Result<()> {
@@ -268,13 +203,10 @@ impl GuiFrontEnd {
             mux_windows.truncate(1);
         }
 
-        // First, repurpose existing windows.
-        // Note that both iter_windows_in_workspace and self.known_windows have a
-        // deterministic iteration order, so switching back and forth should result
-        // in a consistent mux <-> gui window mapping.
+        // Keep the session's existing native window; close stale windows even
+        // when the session list is empty. Never repurpose a window for a session.
         let known_windows = std::mem::take(&mut *self.known_windows.borrow_mut());
         let mut windows = BTreeMap::new();
-        let mut unused = BTreeMap::new();
 
         for (window, window_id) in known_windows.into_iter() {
             if let Some(idx) = mux_windows.iter().position(|&id| id == window_id) {
@@ -282,23 +214,12 @@ impl GuiFrontEnd {
                 windows.insert(window, window_id);
                 mux_windows.remove(idx);
             } else {
-                unused.insert(window, window_id);
+                window.close();
+                self.spawned_mux_window.borrow_mut().remove(&window_id);
             }
         }
 
         let mut mux_windows = mux_windows.into_iter();
-
-        for (window, old_id) in unused.into_iter() {
-            if let Some(mux_window_id) = mux_windows.next() {
-                window.notify(TermWindowNotif::SwitchToMuxWindow(mux_window_id));
-                windows.insert(window, mux_window_id);
-            } else {
-                // We have more windows than are in the new workspace;
-                // we no longer need this one!
-                window.close();
-                front_end().spawned_mux_window.borrow_mut().remove(&old_id);
-            }
-        }
 
         log::trace!("reconcile: windows -> {:?}", windows);
         *self.known_windows.borrow_mut() = windows;
@@ -331,7 +252,6 @@ impl GuiFrontEnd {
                         .remove(&mux_window_id);
                 }
             }
-            *front_end().switching_workspaces.borrow_mut() = false;
             promise.ok(());
         })
         .detach();
@@ -347,31 +267,16 @@ impl GuiFrontEnd {
         false
     }
 
-    pub fn switch_workspace(&self, workspace: &str) {
-        let mux = Mux::get();
-        mux.set_active_workspace_for_client(&self.client_id, workspace);
-        *self.switching_workspaces.borrow_mut() = false;
-        self.reconcile_workspace();
-    }
-
     pub fn record_known_window(&self, window: Window, mux_window_id: MuxWindowId) {
         self.known_windows
             .borrow_mut()
             .insert(window, mux_window_id);
-        if !self.is_switching_workspace() {
-            self.reconcile_workspace();
-        }
+        self.reconcile_workspace();
     }
 
     pub fn forget_known_window(&self, window: &Window) {
         self.known_windows.borrow_mut().remove(window);
-        if !self.is_switching_workspace() {
-            self.reconcile_workspace();
-        }
-    }
-
-    pub fn is_switching_workspace(&self) -> bool {
-        *self.switching_workspaces.borrow()
+        self.reconcile_workspace();
     }
 
     pub fn gui_window_for_mux_window(&self, mux_window_id: MuxWindowId) -> Option<GuiWin> {
@@ -402,50 +307,13 @@ pub fn front_end() -> Rc<GuiFrontEnd> {
         .expect("to be called on gui thread")
 }
 
-pub struct WorkspaceSwitcher {
-    new_name: String,
-}
-
-impl WorkspaceSwitcher {
-    pub fn new(new_name: &str) -> Self {
-        *front_end().switching_workspaces.borrow_mut() = true;
-        Self {
-            new_name: new_name.to_string(),
-        }
-    }
-
-    pub fn do_switch(self) {
-        // Drop is invoked, which will complete the switch
-    }
-}
-
-impl Drop for WorkspaceSwitcher {
-    fn drop(&mut self) {
-        front_end().switch_workspace(&self.new_name);
-    }
-}
-
 pub fn shutdown() {
     FRONT_END.with(|f| drop(f.borrow_mut().take()));
 }
 
-pub fn try_new() -> Result<Rc<GuiFrontEnd>, Error> {
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn try_new() -> anyhow::Result<Rc<GuiFrontEnd>> {
     let front_end = GuiFrontEnd::try_new()?;
     FRONT_END.with(|f| *f.borrow_mut() = Some(Rc::clone(&front_end)));
-
-    let config_subscription = config::subscribe_to_config_reload({
-        move || {
-            promise::spawn::spawn_into_main_thread(async {
-                crate::commands::CommandDef::recreate_menubar(&config::configuration());
-            })
-            .detach();
-            true
-        }
-    });
-    front_end
-        .config_subscription
-        .borrow_mut()
-        .replace(config_subscription);
-
     Ok(front_end)
 }

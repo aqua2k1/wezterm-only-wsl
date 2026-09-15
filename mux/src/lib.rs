@@ -1,11 +1,10 @@
 use crate::client::{ClientId, ClientInfo};
-use crate::pane::{CachePolicy, Pane, PaneId};
-use crate::tab::{SplitRequest, Tab, TabId};
+use crate::pane::{Pane, PaneId};
+use crate::tab::{Tab, TabId};
 use crate::window::{Window, WindowId};
 use anyhow::{anyhow, Context, Error};
-use config::keyassignment::SpawnTabDomain;
 use config::{configuration, ExitBehavior, GuiPosition};
-use domain::{Domain, DomainId, DomainState, SplitSource};
+use domain::{Domain, DomainId};
 use filedescriptor::{poll, pollfd, socketpair, AsRawSocketDescriptor, FileDescriptor, POLLIN};
 #[cfg(unix)]
 use libc::{c_int, SOL_SOCKET, SO_RCVBUF, SO_SNDBUF};
@@ -14,8 +13,7 @@ use metrics::histogram;
 use parking_lot::{
     MappedRwLockReadGuard, MappedRwLockWriteGuard, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard,
 };
-use percent_encoding::percent_decode_str;
-use portable_pty::{CommandBuilder, ExitStatus, PtySize};
+use portable_pty::PtySize;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::io::{Read, Write};
@@ -27,8 +25,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use termwiz::escape::csi::{DecPrivateMode, DecPrivateModeCode, Device, Mode};
 use termwiz::escape::{Action, CSI};
-use thiserror::*;
-use wezterm_term::{Clipboard, ClipboardSelection, DownloadHandler, TerminalSize};
+use wezterm_term::{Clipboard, ClipboardSelection, TerminalSize};
 #[cfg(windows)]
 use windows_sys::Win32::Networking::WinSock::{SOL_SOCKET, SO_RCVBUF, SO_SNDBUF};
 
@@ -55,8 +52,6 @@ pub enum MuxNotification {
     WindowCreated(WindowId),
     WindowRemoved(WindowId),
     WindowInvalidated(WindowId),
-    WindowWorkspaceChanged(WindowId),
-    ActiveWorkspaceChanged(Arc<ClientId>),
     Alert {
         pane_id: PaneId,
         alert: wezterm_term::Alert,
@@ -66,10 +61,6 @@ pub enum MuxNotification {
         pane_id: PaneId,
         selection: ClipboardSelection,
         clipboard: Option<String>,
-    },
-    SaveToDownloads {
-        name: Option<String>,
-        data: Arc<Vec<u8>>,
     },
     TabAddedToWindow {
         tab_id: TabId,
@@ -85,10 +76,6 @@ pub enum MuxNotification {
         window_id: WindowId,
         title: String,
     },
-    WorkspaceRenamed {
-        old_workspace: String,
-        new_workspace: String,
-    },
 }
 
 static LAST_SUBSCRIBER_ID: AtomicUsize = AtomicUsize::new(0);
@@ -101,10 +88,8 @@ pub struct Mux {
     domains: RwLock<HashMap<DomainId, Arc<dyn Domain>>>,
     domains_by_name: RwLock<HashMap<String, Arc<dyn Domain>>>,
     subscribers: RwLock<HashMap<usize, Box<dyn Fn(MuxNotification) -> bool + Send + Sync>>>,
-    banner: RwLock<Option<String>>,
     clients: RwLock<HashMap<ClientId, ClientInfo>>,
     identity: RwLock<Option<Arc<ClientId>>>,
-    num_panes_by_workspace: RwLock<HashMap<String, usize>>,
     single_session_spawn_lock: smol::lock::Mutex<()>,
     main_thread_id: std::thread::ThreadId,
 }
@@ -274,11 +259,7 @@ fn allocate_socketpair() -> anyhow::Result<(FileDescriptor, FileDescriptor)> {
 /// blocking reads from the pty (non-blocking reads are not portable to
 /// all platforms and pty/tty types), parse the escape sequences and
 /// relay the actions to the mux thread to apply them to the pane.
-fn read_from_pane_pty(
-    pane: Weak<dyn Pane>,
-    banner: Option<String>,
-    mut reader: Box<dyn std::io::Read>,
-) {
+fn read_from_pane_pty(pane: Weak<dyn Pane>, mut reader: Box<dyn std::io::Read>) {
     let mut buf = vec![0; BUFSIZE];
 
     // This is used to signal that an error occurred either in this thread,
@@ -310,10 +291,6 @@ fn read_from_pane_pty(
         let dead = Arc::clone(&dead);
         move || parse_buffered_data(pane, &dead, rx)
     });
-
-    if let Some(banner) = banner {
-        tx.write_all(banner.as_bytes()).ok();
-    }
 
     // Loop until the pane or the main mux thread is dead.
     // Read data from the pane pty and send it to the parser thread via tx/rx.
@@ -438,22 +415,11 @@ impl Mux {
             domains_by_name: RwLock::new(domains_by_name),
             domains: RwLock::new(domains),
             subscribers: RwLock::new(HashMap::new()),
-            banner: RwLock::new(None),
             clients: RwLock::new(HashMap::new()),
             identity: RwLock::new(None),
-            num_panes_by_workspace: RwLock::new(HashMap::new()),
             single_session_spawn_lock: smol::lock::Mutex::new(()),
             main_thread_id: std::thread::current().id(),
         }
-    }
-
-    fn get_default_workspace(&self) -> String {
-        let config = configuration();
-        config
-            .default_workspace
-            .as_deref()
-            .unwrap_or(DEFAULT_WORKSPACE)
-            .to_string()
     }
 
     pub fn is_main_thread(&self) -> bool {
@@ -511,31 +477,6 @@ impl Mux {
     /// requests arrive at the same time.
     pub(crate) async fn acquire_single_session_spawn_lock(&self) -> smol::lock::MutexGuard<'_, ()> {
         self.single_session_spawn_lock.lock().await
-    }
-
-    fn ensure_single_session_workspace_change_allowed(
-        &self,
-        old_workspace: &str,
-        new_workspace: &str,
-    ) -> bool {
-        old_workspace == new_workspace || !self.has_terminal_session()
-    }
-
-    fn recompute_pane_count(&self) {
-        let mut count = HashMap::new();
-        for window in self.windows.read().values() {
-            let workspace = window.get_workspace();
-            for tab in window.iter_tabs() {
-                *count.entry(workspace.to_string()).or_insert(0) += match tab.count_panes() {
-                    Some(n) => n,
-                    None => {
-                        // Busy: abort this and we'll retry later
-                        return;
-                    }
-                };
-            }
-        }
-        *self.num_panes_by_workspace.write() = count;
     }
 
     pub fn client_had_input(&self, client_id: &ClientId) {
@@ -632,106 +573,9 @@ impl Mux {
             .collect()
     }
 
-    /// Returns a list of the unique workspace names known to the mux.
-    /// This is taken from all known windows.
-    pub fn iter_workspaces(&self) -> Vec<String> {
-        let mut names: Vec<String> = self
-            .windows
-            .read()
-            .values()
-            .map(|w| w.get_workspace().to_string())
-            .collect();
-        names.sort();
-        names.dedup();
-        names
-    }
-
-    /// Generate a new unique workspace name
-    pub fn generate_workspace_name(&self) -> String {
-        let used = self.iter_workspaces();
-        for candidate in names::Generator::default() {
-            if !used.contains(&candidate) {
-                return candidate;
-            }
-        }
-        unreachable!();
-    }
-
-    /// Returns the effective active workspace name
+    /// Returns the one fixed workspace used only by the internal wrapper.
     pub fn active_workspace(&self) -> String {
-        self.identity
-            .read()
-            .as_ref()
-            .and_then(|ident| {
-                self.clients
-                    .read()
-                    .get(&ident)
-                    .and_then(|info| info.active_workspace.clone())
-            })
-            .unwrap_or_else(|| self.get_default_workspace())
-    }
-
-    /// Returns the effective active workspace name for a given client
-    pub fn active_workspace_for_client(&self, ident: &Arc<ClientId>) -> String {
-        self.clients
-            .read()
-            .get(&ident)
-            .and_then(|info| info.active_workspace.clone())
-            .unwrap_or_else(|| self.get_default_workspace())
-    }
-
-    pub fn set_active_workspace_for_client(&self, ident: &Arc<ClientId>, workspace: &str) {
-        if !self.ensure_single_session_workspace_change_allowed(
-            &self.active_workspace_for_client(ident),
-            workspace,
-        ) {
-            log::debug!(
-                "single-session mode: refusing to switch active workspace to {workspace:?}"
-            );
-            return;
-        }
-
-        let mut clients = self.clients.write();
-        if let Some(info) = clients.get_mut(&ident) {
-            info.active_workspace.replace(workspace.to_string());
-            self.notify(MuxNotification::ActiveWorkspaceChanged(ident.clone()));
-        }
-    }
-
-    /// Assigns the active workspace name for the current identity
-    pub fn set_active_workspace(&self, workspace: &str) {
-        if let Some(ident) = self.identity.read().clone() {
-            self.set_active_workspace_for_client(&ident, workspace);
-        }
-    }
-
-    pub fn rename_workspace(&self, old_workspace: &str, new_workspace: &str) {
-        if old_workspace == new_workspace {
-            return;
-        }
-        if !self.ensure_single_session_workspace_change_allowed(old_workspace, new_workspace) {
-            log::debug!("single-session mode: refusing to rename workspace {old_workspace:?}");
-            return;
-        }
-        self.notify(MuxNotification::WorkspaceRenamed {
-            old_workspace: old_workspace.to_string(),
-            new_workspace: new_workspace.to_string(),
-        });
-
-        for window in self.windows.write().values_mut() {
-            if window.get_workspace() == old_workspace {
-                window.set_workspace(new_workspace);
-            }
-        }
-        self.recompute_pane_count();
-        for client in self.clients.write().values_mut() {
-            if client.active_workspace.as_deref() == Some(old_workspace) {
-                client.active_workspace.replace(new_workspace.to_string());
-                self.notify(MuxNotification::ActiveWorkspaceChanged(
-                    client.client_id.clone(),
-                ));
-            }
-        }
+        DEFAULT_WORKSPACE.to_string()
     }
 
     /// Overrides the current client identity.
@@ -848,9 +692,6 @@ impl Mux {
         let clipboard: Arc<dyn Clipboard> = Arc::new(MuxClipboard { pane_id });
         pane.set_clipboard(&clipboard);
 
-        let downloader: Arc<dyn DownloadHandler> = Arc::new(MuxDownloader {});
-        pane.set_download_handler(&downloader);
-
         {
             let mut panes = self.panes.write();
             if panes.contains_key(&pane_id) {
@@ -868,18 +709,11 @@ impl Mux {
             panes.insert(pane_id, Arc::clone(pane));
         }
         if let Some(reader) = pane.reader()? {
-            let banner = self.banner.read().clone();
             let pane = Arc::downgrade(pane);
-            thread::spawn(move || read_from_pane_pty(pane, banner, reader));
+            thread::spawn(move || read_from_pane_pty(pane, reader));
         }
-        self.recompute_pane_count();
         self.notify(MuxNotification::PaneAdded(pane_id));
         Ok(())
-    }
-
-    pub fn add_tab_no_panes(&self, tab: &Arc<Tab>) {
-        self.tabs.write().insert(tab.tab_id(), Arc::clone(tab));
-        self.recompute_pane_count();
     }
 
     pub fn add_tab_and_active_pane(&self, tab: &Arc<Tab>) -> Result<(), Error> {
@@ -898,16 +732,10 @@ impl Mux {
 
     fn remove_pane_internal(&self, pane_id: PaneId) {
         log::debug!("removing pane {}", pane_id);
-        let mut changed = false;
         if let Some(pane) = self.panes.write().remove(&pane_id).clone() {
             log::debug!("killing pane {}", pane_id);
             pane.kill();
             self.notify(MuxNotification::PaneRemoved(pane_id));
-            changed = true;
-        }
-
-        if changed {
-            self.recompute_pane_count();
         }
     }
 
@@ -930,7 +758,6 @@ impl Mux {
         for pane_id in pane_ids {
             self.remove_pane_internal(pane_id);
         }
-        self.recompute_pane_count();
 
         Some(tab)
     }
@@ -967,7 +794,6 @@ impl Mux {
             }
             self.notify(MuxNotification::WindowRemoved(window_id));
         }
-        self.recompute_pane_count();
     }
 
     pub fn remove_pane(&self, pane_id: PaneId) {
@@ -1064,12 +890,8 @@ impl Mux {
         window.get_active_tab().map(Arc::clone)
     }
 
-    pub fn new_empty_window(
-        &self,
-        workspace: Option<String>,
-        position: Option<GuiPosition>,
-    ) -> MuxWindowBuilder {
-        let window = Window::new(workspace, position);
+    pub fn new_empty_window(&self, position: Option<GuiPosition>) -> MuxWindowBuilder {
+        let window = Window::new(position);
         let window_id = window.window_id();
         self.windows.write().insert(window_id, window);
         MuxWindowBuilder {
@@ -1093,7 +915,6 @@ impl Mux {
                 .ok_or_else(|| anyhow!("add_tab_to_window: no such window_id {}", window_id))?;
             window.push_tab(tab);
         }
-        self.recompute_pane_count();
         self.notify(MuxNotification::TabAddedToWindow { tab_id, window_id });
         Ok(())
     }
@@ -1112,20 +933,6 @@ impl Mux {
 
     pub fn is_empty(&self) -> bool {
         self.panes.read().is_empty()
-    }
-
-    pub fn is_workspace_empty(&self, workspace: &str) -> bool {
-        *self
-            .num_panes_by_workspace
-            .read()
-            .get(workspace)
-            .unwrap_or(&0)
-            == 0
-    }
-
-    pub fn is_active_workspace_empty(&self) -> bool {
-        let workspace = self.active_workspace();
-        self.is_workspace_empty(&workspace)
     }
 
     pub fn iter_panes(&self) -> Vec<Arc<dyn Pane>> {
@@ -1176,223 +983,6 @@ impl Mux {
         let window_id = self.window_containing_tab(tab_id)?;
         Some((domain_id, window_id, tab_id))
     }
-
-    pub fn domain_was_detached(&self, domain: DomainId) {
-        let mut dead_panes = vec![];
-        for pane in self.panes.read().values() {
-            if pane.domain_id() == domain {
-                dead_panes.push(pane.pane_id());
-            }
-        }
-
-        {
-            let mut windows = self.windows.write();
-            for (_, win) in windows.iter_mut() {
-                for tab in win.iter_tabs() {
-                    tab.kill_panes_in_domain(domain);
-                }
-            }
-        }
-
-        log::info!("domain detached panes: {:?}", dead_panes);
-        for pane_id in dead_panes {
-            self.remove_pane_internal(pane_id);
-        }
-
-        self.prune_dead_windows();
-    }
-
-    pub fn set_banner(&self, banner: Option<String>) {
-        *self.banner.write() = banner;
-    }
-
-    pub fn resolve_spawn_tab_domain(
-        &self,
-        // TODO: disambiguate with TabId
-        pane_id: Option<PaneId>,
-        domain: &config::keyassignment::SpawnTabDomain,
-    ) -> anyhow::Result<Arc<dyn Domain>> {
-        let domain = match domain {
-            SpawnTabDomain::DefaultDomain => self.default_domain(),
-            SpawnTabDomain::CurrentPaneDomain => match pane_id {
-                Some(pane_id) => {
-                    let (pane_domain_id, _window_id, _tab_id) = self
-                        .resolve_pane_id(pane_id)
-                        .ok_or_else(|| anyhow!("pane_id {} invalid", pane_id))?;
-                    self.get_domain(pane_domain_id)
-                        .expect("resolve_pane_id to give valid domain_id")
-                }
-                None => self.default_domain(),
-            },
-            SpawnTabDomain::DomainId(domain_id) => self
-                .get_domain(*domain_id)
-                .ok_or_else(|| anyhow!("domain id {} is invalid", domain_id))?,
-            SpawnTabDomain::DomainName(name) => {
-                self.get_domain_by_name(&name).ok_or_else(|| {
-                    let names: Vec<String> = self
-                        .domains_by_name
-                        .read()
-                        .keys()
-                        .map(|name| format!("\"{name}\""))
-                        .collect();
-                    anyhow!(
-                        "domain name \"{name}\" is invalid. Possible names are {}.",
-                        names.join(", ")
-                    )
-                })?
-            }
-        };
-        Ok(domain)
-    }
-
-    fn resolve_cwd(
-        &self,
-        command_dir: Option<String>,
-        pane: Option<Arc<dyn Pane>>,
-        target_domain: DomainId,
-        policy: CachePolicy,
-    ) -> Option<String> {
-        command_dir.or_else(|| {
-            match pane {
-                Some(pane) if pane.domain_id() == target_domain => pane
-                    .get_current_working_dir(policy)
-                    .and_then(|url| {
-                        percent_decode_str(url.path())
-                            .decode_utf8()
-                            .ok()
-                            .map(|path| path.into_owned())
-                    })
-                    .map(|path| {
-                        // On Windows the file URI can produce a path like:
-                        // `/C:\Users` which is valid in a file URI, but the leading slash
-                        // is not liked by the windows file APIs, so we strip it off here.
-                        let bytes = path.as_bytes();
-                        if bytes.len() > 2 && bytes[0] == b'/' && bytes[2] == b':' {
-                            path[1..].to_owned()
-                        } else {
-                            path
-                        }
-                    }),
-                _ => None,
-            }
-        })
-    }
-
-    pub async fn split_pane(
-        &self,
-        // TODO: disambiguate with TabId
-        _pane_id: PaneId,
-        _request: SplitRequest,
-        _source: SplitSource,
-        _domain: config::keyassignment::SpawnTabDomain,
-    ) -> anyhow::Result<(Arc<dyn Pane>, TerminalSize)> {
-        anyhow::bail!("pane splitting is disabled")
-    }
-
-    pub async fn move_pane_to_new_tab(
-        &self,
-        _pane_id: PaneId,
-        _window_id: Option<WindowId>,
-        _workspace_for_new_window: Option<String>,
-    ) -> anyhow::Result<(Arc<Tab>, WindowId)> {
-        anyhow::bail!("moving panes to a new tab is disabled")
-    }
-
-    pub async fn spawn_tab_or_window(
-        &self,
-        window_id: Option<WindowId>,
-        domain: SpawnTabDomain,
-        command: Option<CommandBuilder>,
-        command_dir: Option<String>,
-        size: TerminalSize,
-        current_pane_id: Option<PaneId>,
-        workspace_for_new_window: String,
-        window_position: Option<GuiPosition>,
-    ) -> anyhow::Result<(Arc<Tab>, Arc<dyn Pane>, WindowId)> {
-        let domain = self
-            .resolve_spawn_tab_domain(current_pane_id, &domain)
-            .context("resolve_spawn_tab_domain")?;
-
-        self.ensure_single_session_spawn_allowed()?;
-
-        let window_builder;
-        let term_config;
-
-        let (window_id, size) = if let Some(window_id) = window_id {
-            let window = self
-                .get_window_mut(window_id)
-                .ok_or_else(|| anyhow!("window_id {} not found on this server", window_id))?;
-            let tab = window
-                .get_active_tab()
-                .ok_or_else(|| anyhow!("window {} has no tabs", window_id))?;
-            let pane = tab
-                .get_active_pane()
-                .ok_or_else(|| anyhow!("active tab in window {} has no panes", window_id))?;
-            term_config = pane.get_config();
-
-            let size = tab.get_size();
-
-            (window_id, size)
-        } else {
-            term_config = None;
-            window_builder = self.new_empty_window(Some(workspace_for_new_window), window_position);
-            (*window_builder, size)
-        };
-
-        if domain.state() == DomainState::Detached {
-            domain.attach(Some(window_id)).await?;
-        }
-
-        let cwd = self.resolve_cwd(
-            command_dir,
-            match current_pane_id {
-                Some(id) => {
-                    // Only use the cwd from the current pane if the domain
-                    // is the same as the one we are spawning into
-                    let (current_domain_id, _, _) = self
-                        .resolve_pane_id(id)
-                        .ok_or_else(|| anyhow!("pane_id {} invalid", id))?;
-                    if current_domain_id == domain.domain_id() {
-                        self.get_pane(id)
-                    } else {
-                        None
-                    }
-                }
-                None => None,
-            },
-            domain.domain_id(),
-            CachePolicy::FetchImmediate,
-        );
-
-        let tab = domain
-            .spawn(size, command.clone(), cwd.clone(), window_id)
-            .await
-            .with_context(|| {
-                format!(
-                    "Spawning in domain `{}`: {size:?} command={command:?} cwd={cwd:?}",
-                    domain.domain_name()
-                )
-            })?;
-
-        let pane = tab
-            .get_active_pane()
-            .ok_or_else(|| anyhow!("missing active pane on tab!?"))?;
-
-        if let Some(config) = term_config {
-            pane.set_config(config);
-        }
-
-        // FIXME: clipboard?
-
-        let mut window = self
-            .get_window_mut(window_id)
-            .ok_or_else(|| anyhow!("no such window!?"))?;
-        if let Some(idx) = window.get_tab_idx_for_id(tab.tab_id()) {
-            window.remember_and_set_active_tab_idx(idx);
-        }
-
-        Ok((tab, pane, window_id))
-    }
 }
 
 pub struct IdentityHolder {
@@ -1405,17 +995,6 @@ impl Drop for IdentityHolder {
             mux.replace_identity(self.prior.take());
         }
     }
-}
-
-#[derive(Debug, Error)]
-#[allow(dead_code)]
-pub enum SessionTerminated {
-    #[error("Process exited: {:?}", status)]
-    ProcessStatus { status: ExitStatus },
-    #[error("Error: {:?}", err)]
-    Error { err: Error },
-    #[error("Window Closed")]
-    WindowClosed,
 }
 
 pub(crate) fn terminal_size_to_pty_size(size: TerminalSize) -> anyhow::Result<PtySize> {
@@ -1445,18 +1024,5 @@ impl Clipboard for MuxClipboard {
             clipboard,
         });
         Ok(())
-    }
-}
-
-struct MuxDownloader {}
-
-impl wezterm_term::DownloadHandler for MuxDownloader {
-    fn save_to_downloads(&self, name: Option<String>, data: Vec<u8>) {
-        if let Some(mux) = Mux::try_get() {
-            mux.notify(MuxNotification::SaveToDownloads {
-                name,
-                data: Arc::new(data),
-            });
-        }
     }
 }

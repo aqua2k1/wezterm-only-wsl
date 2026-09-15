@@ -7,20 +7,17 @@
 
 use crate::localpane::LocalPane;
 use crate::pane::{alloc_pane_id, Pane, PaneId};
-use crate::tab::{SplitRequest, Tab, TabId};
+use crate::tab::Tab;
 use crate::window::WindowId;
 use crate::Mux;
 use anyhow::{bail, Context, Error};
 use async_trait::async_trait;
-use config::keyassignment::{SpawnCommand, SpawnTabDomain};
-use config::{configuration, ExecDomain, ValueOrFunc, WslDomain};
+use config::{configuration, WslDomain};
 use downcast_rs::{impl_downcast, Downcast};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, ExitStatus, MasterPty, PtySize, PtySystem};
-use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::Write;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use wezterm_term::TerminalSize;
 
@@ -35,15 +32,6 @@ pub enum DomainState {
 
 pub fn alloc_domain_id() -> DomainId {
     DOMAIN_ID.fetch_add(1, ::std::sync::atomic::Ordering::Relaxed)
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SplitSource {
-    Spawn {
-        command: Option<CommandBuilder>,
-        command_dir: Option<String>,
-    },
-    MovePane(PaneId),
 }
 
 #[async_trait(?Send)]
@@ -71,35 +59,12 @@ pub trait Domain: Downcast + Send + Sync {
         Ok(tab)
     }
 
-    async fn split_pane(
-        &self,
-        _source: SplitSource,
-        _tab: TabId,
-        _pane_id: PaneId,
-        _split_request: SplitRequest,
-    ) -> anyhow::Result<Arc<dyn Pane>> {
-        anyhow::bail!("pane splitting is disabled")
-    }
-
     async fn spawn_pane(
         &self,
         size: TerminalSize,
         command: Option<CommandBuilder>,
         command_dir: Option<String>,
     ) -> anyhow::Result<Arc<dyn Pane>>;
-
-    /// The mux will call this method on the domain of the pane that
-    /// is being moved to give the domain a chance to handle the movement.
-    /// If this method returns Ok(None), then the mux will handle the
-    /// movement itself by mutating its local Tabs and Windows.
-    async fn move_pane_to_new_tab(
-        &self,
-        _pane_id: PaneId,
-        _window_id: Option<WindowId>,
-        _workspace_for_new_window: Option<String>,
-    ) -> anyhow::Result<Option<(Arc<Tab>, WindowId)>> {
-        anyhow::bail!("moving panes to a new tab is disabled")
-    }
 
     /// Returns false if the `spawn` method will never succeed.
     /// There are some internal placeholder domains that are
@@ -152,11 +117,10 @@ mod single_session_tests {
             ..Default::default()
         })
         .unwrap();
-        let selected = domain.resolve_wsl_domain().unwrap();
+        let selected = domain.resolve_wsl_domain();
         assert_eq!(selected.name, "WSL:Test");
         assert_eq!(selected.distribution.as_deref(), Some("TestDistro"));
         assert_eq!(selected.default_prog, Some(vec!["/bin/bash".to_string()]));
-        assert!(domain.resolve_exec_domain().is_none());
     }
 }
 
@@ -164,56 +128,23 @@ pub struct LocalDomain {
     pty_system: Mutex<Box<dyn PtySystem + Send>>,
     id: DomainId,
     name: String,
-    pinned_wsl: Option<WslDomain>,
+    pinned_wsl: WslDomain,
 }
 
 impl LocalDomain {
-    pub fn new(name: &str) -> Result<Self, Error> {
-        Ok(Self::with_pty_system(name, native_pty_system()))
-    }
-
-    fn resolve_exec_domain(&self) -> Option<ExecDomain> {
-        if self.pinned_wsl.is_some() {
-            return None;
-        }
-        config::configuration()
-            .exec_domains
-            .iter()
-            .find(|ed| ed.name == self.name)
-            .cloned()
-    }
-
-    fn resolve_wsl_domain(&self) -> Option<WslDomain> {
-        if let Some(wsl) = &self.pinned_wsl {
-            return Some(wsl.clone());
-        }
-        config::configuration()
-            .wsl_domains()
-            .iter()
-            .find(|d| d.name == self.name)
-            .cloned()
-    }
-
-    pub fn with_pty_system(name: &str, pty_system: Box<dyn PtySystem + Send>) -> Self {
-        let id = alloc_domain_id();
-        Self {
-            pty_system: Mutex::new(pty_system),
-            id,
-            name: name.to_string(),
-            pinned_wsl: None,
-        }
-    }
-
     pub fn new_wsl(wsl: WslDomain) -> Result<Self, Error> {
-        // A reload must not turn an already-selected WSL domain into a
-        // Windows shell or a same-named exec domain during async startup.
-        let mut domain = Self::new(&wsl.name)?;
-        domain.pinned_wsl = Some(wsl);
-        Ok(domain)
+        let id = alloc_domain_id();
+        let name = wsl.name.clone();
+        Ok(Self {
+            pty_system: Mutex::new(native_pty_system()),
+            id,
+            name,
+            pinned_wsl: wsl,
+        })
     }
 
-    pub fn new_exec_domain(exec_domain: ExecDomain) -> anyhow::Result<Self> {
-        Self::new(&exec_domain.name)
+    fn resolve_wsl_domain(&self) -> &WslDomain {
+        &self.pinned_wsl
     }
 
     #[cfg(unix)]
@@ -231,181 +162,43 @@ impl LocalDomain {
     }
 
     async fn fixup_command(&self, cmd: &mut CommandBuilder) -> anyhow::Result<()> {
-        if let Some(wsl) = self.resolve_wsl_domain() {
-            let mut args: Vec<OsString> = cmd.get_argv().clone();
+        let wsl = self.resolve_wsl_domain();
+        let mut args: Vec<OsString> = cmd.get_argv().clone();
 
-            if args.is_empty() {
-                if let Some(def_prog) = &wsl.default_prog {
-                    for arg in def_prog {
-                        args.push(arg.into());
-                    }
+        if args.is_empty() {
+            if let Some(def_prog) = &wsl.default_prog {
+                for arg in def_prog {
+                    args.push(arg.into());
                 }
-            }
-
-            let mut argv: Vec<OsString> = vec![
-                "wsl.exe".into(),
-                "--distribution".into(),
-                wsl.distribution
-                    .as_deref()
-                    .unwrap_or(wsl.name.as_str())
-                    .into(),
-            ];
-
-            if let Some(cwd) = cmd.get_cwd() {
-                argv.push("--cd".into());
-                argv.push(cwd.into());
-            }
-
-            if let Some(user) = &wsl.username {
-                argv.push("--user".into());
-                argv.push(user.into());
-            }
-
-            if !args.is_empty() {
-                argv.push("--exec".into());
-                for arg in args {
-                    argv.push(arg);
-                }
-            }
-
-            // TODO: process env list and update WLSENV so that they
-            // get passed through
-
-            cmd.clear_cwd();
-            *cmd.get_argv_mut() = argv;
-        } else if let Some(ed) = self.resolve_exec_domain() {
-            let mut args = vec![];
-            let mut set_environment_variables = HashMap::new();
-            for arg in cmd.get_argv() {
-                args.push(
-                    arg.to_str()
-                        .ok_or_else(|| anyhow::anyhow!("command argument is not utf8"))?
-                        .to_string(),
-                );
-            }
-            for (k, v) in cmd.iter_full_env_as_str() {
-                set_environment_variables.insert(k.to_string(), v.to_string());
-            }
-            let cwd = match cmd.get_cwd() {
-                Some(cwd) => Some(PathBuf::from(cwd)),
-                None => None,
-            };
-            let spawn_command = SpawnCommand {
-                label: None,
-                domain: SpawnTabDomain::DomainName(ed.name.clone()),
-                args: if args.is_empty() { None } else { Some(args) },
-                set_environment_variables,
-                cwd,
-                position: None,
-            };
-
-            let spawn_command = config::with_lua_config_on_main_thread(|lua| async {
-                let lua = lua.ok_or_else(|| anyhow::anyhow!("missing lua context"))?;
-                let value = config::lua::emit_async_callback(
-                    &*lua,
-                    (ed.fixup_command.clone(), (spawn_command.clone())),
-                )
-                .await?;
-                let cmd: SpawnCommand =
-                    luahelper::from_lua_value_dynamic(value).with_context(|| {
-                        format!(
-                            "interpreting SpawnCommand result from ExecDomain {}",
-                            ed.name
-                        )
-                    })?;
-                Ok(cmd)
-            })
-            .await
-            .with_context(|| format!("calling ExecDomain {} function", ed.name))?;
-
-            // Reinterpret the SpawnCommand into the builder
-
-            cmd.get_argv_mut().clear();
-            if let Some(args) = &spawn_command.args {
-                for arg in args {
-                    cmd.get_argv_mut().push(arg.into());
-                }
-            }
-            cmd.env_clear();
-            for (k, v) in &spawn_command.set_environment_variables {
-                cmd.env(k, v);
-            }
-            cmd.clear_cwd();
-            if let Some(cwd) = &spawn_command.cwd {
-                cmd.cwd(cwd);
-            }
-        } else if Path::new("/.flatpak-info").exists() {
-            // We're running inside a flatpak sandbox.
-            // Run the command outside the sandbox via flatpak-spawn
-            let mut args = vec![
-                "flatpak-spawn".to_string(),
-                "--host".to_string(),
-                "--watch-bus".to_string(),
-            ];
-            if let Some(cwd) = cmd.get_cwd() {
-                args.push(format!("--directory={}", Path::new(cwd).display()));
-            }
-
-            let is_default_prog = cmd.is_default_prog();
-
-            // Note: WEZTERM_UNIX_SOCKET, WEZTERM_CONFIG_(FILE|DIR) and other env
-            // vars are not included in this.
-            // We can't include them: their paths are only meaningful in the sandbox
-            // and cannot be reasonably accessed from outside it in the shell.
-            for (k, v) in cmd.iter_extra_env_as_str() {
-                args.push(format!("--env={k}={v}"));
-            }
-
-            for arg in cmd.get_argv() {
-                args.push(
-                    arg.to_str()
-                        .ok_or_else(|| anyhow::anyhow!("command argument is not utf8"))?
-                        .to_string(),
-                );
-            }
-
-            if is_default_prog {
-                // We can't read $SHELL from inside the sandbox, so ask the host.
-                let output = std::process::Command::new("flatpak-spawn")
-                    .args(["--host", "sh", "-c", "echo $SHELL"])
-                    .output()?;
-                let shell = String::from_utf8_lossy(&output.stdout);
-
-                args.push(shell.trim().to_string());
-                // Assume we can pass `-l` for a login shell
-                args.push("-l".to_string());
-            }
-
-            // Avoid setting up the controlling tty as that is not compatible
-            // with flatpak:
-            // <https://github.com/flatpak/flatpak/issues/3697>
-            // <https://github.com/flatpak/flatpak/issues/3285>
-            cmd.set_controlling_tty(false);
-
-            // Re-apply to the builder
-            cmd.get_argv_mut().clear();
-            for arg in args {
-                cmd.get_argv_mut().push(arg.into());
-            }
-            cmd.clear_cwd();
-            log::trace!("made: {cmd:#?}");
-        } else if let Some(dir) = cmd.get_cwd() {
-            // I'm not normally a fan of existence checking, but not checking here
-            // can be painful; in the case where a tab is local but has connected
-            // to a remote system and that remote has used OSC 7 to set a path
-            // that doesn't exist on the local system, process spawning can fail.
-            // Another situation is `sudo -i` has the pane with set to a cwd
-            // that is not accessible to the user.
-            if let Err(err) = Path::new(&dir).read_dir() {
-                log::warn!(
-                    "Directory {:?} is not readable and will not be \
-                     used for the command we are spawning: {:#}",
-                    dir,
-                    err
-                );
-                cmd.clear_cwd();
             }
         }
+
+        let mut argv: Vec<OsString> = vec![
+            "wsl.exe".into(),
+            "--distribution".into(),
+            wsl.distribution
+                .as_deref()
+                .unwrap_or(wsl.name.as_str())
+                .into(),
+        ];
+
+        if let Some(cwd) = cmd.get_cwd() {
+            argv.push("--cd".into());
+            argv.push(cwd.into());
+        }
+
+        if let Some(user) = &wsl.username {
+            argv.push("--user".into());
+            argv.push(user.into());
+        }
+
+        if !args.is_empty() {
+            argv.push("--exec".into());
+            argv.extend(args);
+        }
+
+        cmd.clear_cwd();
+        *cmd.get_argv_mut() = argv;
         Ok(())
     }
 
@@ -418,10 +211,7 @@ impl LocalDomain {
         let config = configuration();
 
         let wsl = self.resolve_wsl_domain();
-        let default_prog = wsl
-            .as_ref()
-            .map(|wsl| wsl.default_prog.as_ref())
-            .unwrap_or(config.default_prog.as_ref());
+        let default_prog = wsl.default_prog.as_ref().or(config.default_prog.as_ref());
 
         let mut cmd = match command {
             Some(mut cmd) => {
@@ -431,9 +221,7 @@ impl LocalDomain {
             None => config.build_prog(
                 None,
                 default_prog,
-                wsl.as_ref()
-                    .map(|wsl| wsl.default_cwd.as_ref())
-                    .unwrap_or(config.default_cwd.as_ref()),
+                wsl.default_cwd.as_ref().or(config.default_cwd.as_ref()),
             )?,
         };
         if let Some(dir) = command_dir {
@@ -637,45 +425,10 @@ impl Domain for LocalDomain {
     }
 
     async fn domain_label(&self) -> String {
-        if let Some(ed) = self.resolve_exec_domain() {
-            match &ed.label {
-                Some(ValueOrFunc::Value(wezterm_dynamic::Value::String(s))) => s.to_string(),
-                Some(ValueOrFunc::Func(label_func)) => {
-                    let label = config::with_lua_config_on_main_thread(|lua| async {
-                        let lua = lua.ok_or_else(|| anyhow::anyhow!("missing lua context"))?;
-                        let value = config::lua::emit_async_callback(
-                            &*lua,
-                            (label_func.clone(), (self.name.clone())),
-                        )
-                        .await?;
-                        let label: String =
-                            luahelper::from_lua_value_dynamic(value).with_context(|| {
-                                format!(
-                                    "interpreting SpawnCommand result from ExecDomain {}",
-                                    ed.name
-                                )
-                            })?;
-                        Ok(label)
-                    })
-                    .await;
-                    match label {
-                        Ok(label) => label,
-                        Err(err) => {
-                            log::error!(
-                                "Error while calling label function for ExecDomain `{}`: {err:#}",
-                                self.name
-                            );
-                            self.name.to_string()
-                        }
-                    }
-                }
-                _ => self.name.to_string(),
-            }
-        } else if let Some(wsl) = self.resolve_wsl_domain() {
-            wsl.distribution.unwrap_or_else(|| self.name.to_string())
-        } else {
-            self.name.to_string()
-        }
+        self.pinned_wsl
+            .distribution
+            .clone()
+            .unwrap_or_else(|| self.name.clone())
     }
 
     async fn attach(&self, _window_id: Option<WindowId>) -> anyhow::Result<()> {

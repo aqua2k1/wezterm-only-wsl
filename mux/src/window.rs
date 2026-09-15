@@ -18,14 +18,14 @@ pub struct Window {
 
 impl Window {
     /// Create a new Window.
-    pub fn new(workspace: Option<String>, initial_position: Option<GuiPosition>) -> Self {
+    pub fn new(initial_position: Option<GuiPosition>) -> Self {
         Self {
             id: WIN_ID.fetch_add(1, ::std::sync::atomic::Ordering::Relaxed),
             tabs: vec![],
             active_tab_idx: 0,
             last_active_tab_id: None,
             title: String::new(),
-            workspace: workspace.unwrap_or_else(|| Mux::get().active_workspace()),
+            workspace: crate::DEFAULT_WORKSPACE.to_string(),
             initial_position,
         }
     }
@@ -56,14 +56,6 @@ impl Window {
     /// Return current title.
     pub fn get_title(&self) -> &str {
         &self.title
-    }
-
-    /// Set window workspace, notifying listeners if it changed.
-    pub fn set_workspace(&mut self, workspace: &str) {
-        if workspace == self.workspace {
-            return;
-        }
-        log::debug!("single-session mode: refusing to move window to workspace {workspace:?}");
     }
 
     pub fn window_id(&self) -> WindowId {

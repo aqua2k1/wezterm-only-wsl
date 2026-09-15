@@ -1920,12 +1920,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b231ed28831efb4a61a08580c4bc233ec56bc009f4cd8f52da2c3cb97df0c109"
 
 [[package]]
-name = "futures-timer"
-version = "3.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af43fadb8a98512d547e37b4e92e0ced13e205c061b87b4623eff01d918d6968"
-
-[[package]]
 name = "futures-util"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2070,21 +2064,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c4ee00b289aba7a9e5306d57c2d05499b2e5dc427f84ac708bd2c090212cf3e"
 dependencies = [
  "gl_generator",
-]
-
-[[package]]
-name = "governor"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c390a940a5d157878dd057c78680a33ce3415bcd05b4799509ea44210914b4d5"
-dependencies = [
- "cfg-if",
- "futures",
- "futures-timer",
- "no-std-compat",
- "nonzero_ext",
- "parking_lot",
- "smallvec",
 ]
 
 [[package]]
@@ -3347,7 +3326,6 @@ dependencies = [
  "luahelper",
  "metrics",
  "mlua",
- "names",
  "nix",
  "ntapi",
  "parking_lot",
@@ -3413,15 +3391,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "names"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10a8690bf09abf659851e58cd666c3d37ac6af07c2bd7a9e332cfba471715775"
-dependencies = [
- "rand 0.8.7",
-]
-
-[[package]]
 name = "nanorand"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3476,12 +3445,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "no-std-compat"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b93853da6d84c2e3c7d730d6473e8817692dd89be387eb01b94d7f108ecb5b8c"
-
-[[package]]
 name = "no_std_io2"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3508,12 +3471,6 @@ checksum = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405"
 dependencies = [
  "memchr",
 ]
-
-[[package]]
-name = "nonzero_ext"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38bf9645c8b145698bb0b18a4637dcacbc421ea49bef2317e4fd8065a387cf21"
 
 [[package]]
 name = "noop_proc_macro"
@@ -3910,48 +3867,6 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
-
-[[package]]
-name = "pest"
-version = "2.8.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7df728be843c7070fab6ab7c328c4e9e9d78e23bf749c0669c86ee7ebfa050a2"
-dependencies = [
- "memchr",
- "ucd-trie",
-]
-
-[[package]]
-name = "pest_derive"
-version = "2.8.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e2dd6fc3b26b3462ee188aac870f5a41d398f1cd5e2408d16531bd71c9591fd"
-dependencies = [
- "pest",
- "pest_generator",
-]
-
-[[package]]
-name = "pest_generator"
-version = "2.8.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a7a9205cfb6f596a9e8b689c0a15f9ceb7a1aafae7aaf788150ac65b29975b6"
-dependencies = [
- "pest",
- "pest_meta",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "pest_meta"
-version = "2.8.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85abd351c0de1e8384fc791a0737111a350394937e92b956b743dac12429f57c"
-dependencies = [
- "pest",
-]
 
 [[package]]
 name = "phf"
@@ -4428,14 +4343,6 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "num",
-]
-
-[[package]]
-name = "ratelim"
-version = "0.1.0"
-dependencies = [
- "config",
- "governor",
 ]
 
 [[package]]
@@ -5528,8 +5435,6 @@ dependencies = [
  "num-derive",
  "num-traits",
  "ordered-float 4.6.0",
- "pest",
- "pest_derive",
  "phf",
  "serde",
  "sha2",
@@ -6481,8 +6386,6 @@ dependencies = [
  "num-derive",
  "num-traits",
  "ordered-float 4.6.0",
- "pest",
- "pest_derive",
  "serde",
  "sha2",
  "thiserror 2.0.20",
@@ -6548,7 +6451,6 @@ dependencies = [
  "colorgrad",
  "config",
  "dhat",
- "dirs-next",
  "downcast-rs",
  "embed-resource",
  "emojis",
@@ -6556,7 +6458,6 @@ dependencies = [
  "env_logger 0.11.11",
  "euclid",
  "fastrand",
- "filedescriptor",
  "finl_unicode",
  "frecency",
  "futures",
@@ -6578,7 +6479,6 @@ dependencies = [
  "portable-pty",
  "promise",
  "rangeset",
- "ratelim",
  "rayon",
  "regex",
  "serde",
@@ -6599,7 +6499,6 @@ dependencies = [
  "unicode-segmentation",
  "url",
  "url-funcs",
- "walkdir",
  "wezterm-bidi",
  "wezterm-blob-leases",
  "wezterm-dynamic",

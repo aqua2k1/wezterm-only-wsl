@@ -68,10 +68,6 @@ pub enum InternalError {
     #[error(transparent)]
     ImageError(#[from] image::ImageError),
 
-    #[cfg(feature = "tmux_cc")]
-    #[error(transparent)]
-    Pest(#[from] pest::error::Error<crate::tmux_cc::parser::Rule>),
-
     #[error("{}", .context)]
     Context {
         context: String,

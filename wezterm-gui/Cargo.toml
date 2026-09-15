@@ -42,13 +42,11 @@ clap.workspace = true
 colorgrad.workspace = true
 config.workspace = true
 dhat = {workspace=true, optional=true}
-dirs-next.workspace = true
 downcast-rs.workspace = true
 emojis.workspace = true
 env-bootstrap.workspace = true
 euclid.workspace = true
 fastrand.workspace = true
-filedescriptor.workspace = true
 finl_unicode.workspace = true
 frecency.workspace = true
 futures.workspace = true
@@ -69,7 +67,6 @@ parking_lot.workspace = true
 portable-pty = { workspace=true, features = ["serde_support"]}
 promise.workspace = true
 rangeset.workspace = true
-ratelim.workspace = true
 rayon.workspace = true
 regex.workspace = true
 serde = {workspace=true, features = ["rc", "derive"]}
@@ -89,7 +86,6 @@ unicode-normalization.workspace = true
 unicode-segmentation.workspace = true
 url-funcs.workspace = true
 url.workspace = true
-walkdir.workspace = true
 wezterm-bidi.workspace = true
 wezterm-blob-leases = { workspace=true, features=["simple_tempdir"] }
 wezterm-dynamic.workspace = true

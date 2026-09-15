@@ -6,9 +6,8 @@ use crate::colorease::ColorEase;
 use crate::frontend::{front_end, try_front_end};
 use crate::inputmap::InputMap;
 use crate::overlay::{
-    confirm_close_pane, confirm_close_tab, confirm_close_window, confirm_quit_program, launcher,
-    start_overlay, start_overlay_pane, CopyModeParams, CopyOverlay, LauncherArgs, LauncherFlags,
-    QuickSelectOverlay,
+    confirm_close_pane, confirm_close_tab, confirm_close_window, confirm_quit_program,
+    start_overlay, start_overlay_pane, CopyModeParams, CopyOverlay, QuickSelectOverlay,
 };
 use crate::resize_increment_calculator::ResizeIncrementCalculator;
 use crate::scripting::guiwin::GuiWin;
@@ -31,7 +30,7 @@ use ::wezterm_term::input::{ClickPosition, MouseButton as TMB};
 use ::window::*;
 use anyhow::{anyhow, ensure, Context};
 use config::keyassignment::{
-    Confirmation, KeyAssignment, LauncherActionArgs, Pattern, PromptInputLine, QuickSelectArguments,
+    Confirmation, KeyAssignment, Pattern, PromptInputLine, QuickSelectArguments,
 };
 use config::window::WindowLevel;
 use config::{
@@ -219,7 +218,6 @@ pub enum TermWindowNotif {
     MuxNotification(MuxNotification),
     EmitStatusUpdate,
     Apply(Box<dyn FnOnce(&mut TermWindow) + Send + Sync>),
-    SwitchToMuxWindow(MuxWindowId),
     SetInnerSize {
         width: usize,
         height: usize,
@@ -454,7 +452,6 @@ pub struct TermWindow {
     /// Terminal dimensions
     terminal_size: TerminalSize,
     pub mux_window_id: MuxWindowId,
-    pub mux_window_id_for_subscriptions: Arc<Mutex<MuxWindowId>>,
     /// `true` when the mux subscription must be unsubscribed from.
     /// This is done asynchronously to avoid races between mux events.
     mux_subscription_dead: Arc<AtomicBool>,
@@ -768,7 +765,6 @@ impl TermWindow {
             palette: None,
             focused: None,
             mux_window_id,
-            mux_window_id_for_subscriptions: Arc::new(Mutex::new(mux_window_id)),
             mux_subscription_dead: Arc::new(AtomicBool::new(false)),
             fonts: Rc::clone(&fontconfig),
             render_metrics,
@@ -1367,9 +1363,6 @@ impl TermWindow {
                 MuxNotification::AssignClipboard { .. } => {
                     // Handled by frontend
                 }
-                MuxNotification::SaveToDownloads { .. } => {
-                    // Handled by frontend
-                }
                 MuxNotification::PaneFocused(_) => {
                     // Also handled by clientpane
                     self.update_title_post_status();
@@ -1382,10 +1375,7 @@ impl TermWindow {
                     self.update_title_post_status();
                 }
                 MuxNotification::PaneAdded(_)
-                | MuxNotification::WorkspaceRenamed { .. }
                 | MuxNotification::PaneRemoved(_)
-                | MuxNotification::WindowWorkspaceChanged(_)
-                | MuxNotification::ActiveWorkspaceChanged(_)
                 | MuxNotification::Empty
                 | MuxNotification::WindowCreated(_) => {}
             },
@@ -1404,24 +1394,6 @@ impl TermWindow {
             }
             TermWindowNotif::Apply(func) => {
                 func(self);
-            }
-            TermWindowNotif::SwitchToMuxWindow(mux_window_id) => {
-                self.mux_window_id = mux_window_id;
-                *self.mux_window_id_for_subscriptions.lock().unwrap() = mux_window_id;
-
-                self.clear_all_overlays();
-                self.current_highlight.take();
-                self.invalidate_fancy_tab_bar();
-                self.invalidate_modal();
-
-                let mux = Mux::get();
-                if let Some(window) = mux.get_window(self.mux_window_id) {
-                    for tab in window.iter_tabs() {
-                        tab.resize(self.terminal_size);
-                    }
-                };
-                self.update_title();
-                window.invalidate();
             }
             TermWindowNotif::SetInnerSize { width, height } => {
                 self.set_inner_size(window, width, height);
@@ -1569,9 +1541,6 @@ impl TermWindow {
                     return true;
                 }
                 // The removed window matches our current mux_window_id.
-                // During workspace switches, mux_window_id may be stale.
-                // Skip this notification but keep the subscription alive.
-                // (next notifs should finish the workspace switch & reconcile the state)
                 return true;
             }
             MuxNotification::TabResized(tab_id)
@@ -1588,12 +1557,8 @@ impl TermWindow {
                 ..
             }
             | MuxNotification::AssignClipboard { .. }
-            | MuxNotification::SaveToDownloads { .. }
             | MuxNotification::WindowCreated(_)
-            | MuxNotification::ActiveWorkspaceChanged(_)
-            | MuxNotification::WorkspaceRenamed { .. }
-            | MuxNotification::Empty
-            | MuxNotification::WindowWorkspaceChanged(_) => return true,
+            | MuxNotification::Empty => return true,
             MuxNotification::Alert {
                 alert: Alert::PaletteChanged { .. },
                 ..
@@ -1609,7 +1574,8 @@ impl TermWindow {
 
     fn subscribe_to_pane_updates(&self) {
         let window = self.window.clone().expect("window to be valid on startup");
-        let mux_window_id = Arc::clone(&self.mux_window_id_for_subscriptions);
+        // A native window is permanently bound to its one session.
+        let mux_window_id = self.mux_window_id;
         let mux = Mux::get();
         let dead = Arc::clone(&self.mux_subscription_dead);
         mux.subscribe(move |n| {
@@ -1617,7 +1583,6 @@ impl TermWindow {
                 // Unsubscribe this handler from the mux
                 return false;
             }
-            let mux_window_id = *mux_window_id.lock().unwrap();
             let window = window.clone();
             let dead = dead.clone();
             promise::spawn::spawn_into_main_thread(async move {
@@ -1814,10 +1779,9 @@ impl TermWindow {
         self.palette.take();
 
         let mux = Mux::get();
-        let window = match mux.get_window(self.mux_window_id) {
-            Some(window) => window,
-            _ => return,
-        };
+        if mux.get_window(self.mux_window_id).is_none() {
+            return;
+        }
         self.show_tab_bar = false;
         *self.cursor_blink_state.borrow_mut() = ColorEase::new(
             config.cursor_blink_rate,
@@ -2295,44 +2259,6 @@ impl TermWindow {
         self.activate_tab(tab)
     }
 
-    fn activate_last_tab(&mut self) -> anyhow::Result<()> {
-        let mux = Mux::get();
-        let window = mux
-            .get_window(self.mux_window_id)
-            .ok_or_else(|| anyhow!("no such window"))?;
-
-        let last_idx = window.get_last_active_tab_idx();
-        drop(window);
-        match last_idx {
-            Some(idx) => self.activate_tab(idx as isize),
-            None => Ok(()),
-        }
-    }
-
-    fn move_tab(&mut self, tab_idx: usize) -> anyhow::Result<()> {
-        let mux = Mux::get();
-        let mut window = mux
-            .get_window_mut(self.mux_window_id)
-            .ok_or_else(|| anyhow!("no such window"))?;
-
-        let max = window.count_tabs();
-        ensure!(max > 0, "no more tabs");
-
-        let active_tab_idx = window.get_active_tab_idx();
-
-        ensure!(tab_idx < max, "cannot move a tab out of range");
-
-        let tab = window.remove_tab_idx(active_tab_idx);
-        window.insert_tab_at_idx(tab_idx, &tab);
-        window.set_active_tab_idx_without_saving(tab_idx);
-
-        drop(window);
-        self.update_title();
-        self.update_scrollbar();
-
-        Ok(())
-    }
-
     fn show_input_selector(&mut self, args: &config::keyassignment::InputSelector) {
         let mux = Mux::get();
         let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
@@ -2426,105 +2352,6 @@ impl TermWindow {
         promise::spawn::spawn(future).detach();
     }
 
-    fn show_tab_navigator(&mut self) {
-        let mux = Mux::get();
-        let active_tab_idx = match mux.get_window(self.mux_window_id) {
-            Some(mux_window) => mux_window.get_active_tab_idx(),
-            None => return,
-        };
-        let title = "Tab Navigator".to_string();
-        let args = LauncherActionArgs {
-            title: Some(title),
-            flags: LauncherFlags::TABS,
-            help_text: None,
-            fuzzy_help_text: None,
-            alphabet: None,
-        };
-        self.show_launcher_impl(args, active_tab_idx);
-    }
-
-    fn show_launcher(&mut self) {
-        let title = "Launcher".to_string();
-        let args = LauncherActionArgs {
-            title: Some(title),
-            flags: LauncherFlags::LAUNCH_MENU_ITEMS
-                | LauncherFlags::WORKSPACES
-                | LauncherFlags::DOMAINS
-                | LauncherFlags::KEY_ASSIGNMENTS
-                | LauncherFlags::COMMANDS,
-            help_text: None,
-            fuzzy_help_text: None,
-            alphabet: None,
-        };
-        self.show_launcher_impl(args, 0);
-    }
-
-    fn show_launcher_impl(&mut self, args: LauncherActionArgs, initial_choice_idx: usize) {
-        let mux_window_id = self.mux_window_id;
-        let window = self.window.as_ref().unwrap().clone();
-
-        let mux = Mux::get();
-        let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
-            Some(tab) => tab,
-            None => return,
-        };
-
-        let pane = match self.get_active_pane_or_overlay() {
-            Some(pane) => pane,
-            None => return,
-        };
-
-        let domain_id_of_current_pane = tab
-            .get_active_pane()
-            .expect("tab has no panes!")
-            .domain_id();
-        let pane_id = pane.pane_id();
-        let tab_id = tab.tab_id();
-        let title = args.title.unwrap();
-        let flags = args.flags;
-        let help_text = args.help_text.unwrap_or(
-            "Select an item and press Enter=launch  \
-             Esc=cancel  /=filter"
-                .to_string(),
-        );
-        let fuzzy_help_text = args
-            .fuzzy_help_text
-            .unwrap_or("Fuzzy matching: ".to_string());
-
-        let config = &self.config;
-        let alphabet = args.alphabet.unwrap_or(config.launcher_alphabet.clone());
-
-        promise::spawn::spawn(async move {
-            let args = LauncherArgs::new(
-                &title,
-                flags,
-                mux_window_id,
-                pane_id,
-                domain_id_of_current_pane,
-                &help_text,
-                &fuzzy_help_text,
-                &alphabet,
-            )
-            .await;
-
-            let win = window.clone();
-            win.notify(TermWindowNotif::Apply(Box::new(move |term_window| {
-                let mux = Mux::get();
-                if let Some(tab) = mux.get_tab(tab_id) {
-                    let window = window.clone();
-                    let (overlay, future) =
-                        start_overlay(term_window, &tab, move |_tab_id, term| {
-                            launcher(args, term, window, initial_choice_idx)
-                        });
-
-                    term_window.assign_overlay(tab_id, overlay);
-                    promise::spawn::spawn(future).detach();
-                }
-            })));
-        })
-        .detach();
-    }
-
     /// Returns the Prompt semantic zones
     fn get_semantic_prompt_zones(&mut self, pane: &Arc<dyn Pane>) -> &[StableRowIndex] {
         let cache = self
@@ -2614,29 +2441,6 @@ impl TermWindow {
             win.invalidate();
         }
         Ok(())
-    }
-
-    fn move_tab_relative(&mut self, delta: isize) -> anyhow::Result<()> {
-        let mux = Mux::get();
-        let window = mux
-            .get_window(self.mux_window_id)
-            .ok_or_else(|| anyhow!("no such window"))?;
-
-        let max = window.count_tabs();
-        ensure!(max > 0, "no more tabs");
-
-        let active = window.get_active_tab_idx();
-        let tab = active as isize + delta;
-        let tab = if tab < 0 {
-            0usize
-        } else if tab >= max as isize {
-            max - 1
-        } else {
-            tab as usize
-        };
-
-        drop(window);
-        self.move_tab(tab)
     }
 
     pub fn perform_key_assignment(

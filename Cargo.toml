@@ -137,7 +137,6 @@ mio = "0.8"
 mlua = "0.9"
 mux = { path = "mux" }
 mux-lua = { path = "lua-api-crates/mux" }
-names = { version = "0.12", default-features = false }
 nix = "0.29"
 notify = "5.0.0"
 ntapi = "0.4"
@@ -154,8 +153,6 @@ ordered-float = {version="4.1", default-features=false}
 parking_lot = "0.12"
 passfd = "0.1.6"
 percent-encoding = "2.3"
-pest = "2.7"
-pest_derive = "2.7"
 phf = {version="0.11", default-features=false}
 phf_codegen = "0.10"
 pkg-config = "0.3"

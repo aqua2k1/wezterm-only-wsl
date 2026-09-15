@@ -58,8 +58,6 @@ mod readbuf;
 pub mod render;
 pub use wezterm_surface as surface;
 pub mod terminal;
-#[cfg(feature = "tmux_cc")]
-pub use wezterm_escape_parser::tmux_cc;
 #[cfg(feature = "widgets")]
 pub mod widgets;
 

@@ -8,12 +8,37 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 use wezterm_dynamic::{ToDynamic, Value};
 use wezterm_term::input::MouseButton;
-use window::{KeyCode, Modifiers, PhysKeyCode, UIKeyCapRendering};
+use window::{KeyCode, Modifiers};
 
 pub struct InputMap {
     pub keys: KeyTables,
     pub mouse: HashMap<(MouseEventTrigger, MouseEventTriggerMods), KeyAssignment>,
     leader: Option<(KeyCode, Modifiers, Duration)>,
+}
+
+#[cfg(test)]
+mod single_session_tests {
+    use super::*;
+
+    #[test]
+    fn default_shortcuts_preserve_clipboard_but_not_session_management() {
+        let map = InputMap::default_input_map();
+        let actions: Vec<_> = map
+            .keys
+            .default
+            .values()
+            .map(|entry| &entry.action)
+            .collect();
+        assert!(actions
+            .iter()
+            .all(|action| crate::termwindow::wsl_single_session_restriction(action).is_none()));
+        assert!(actions
+            .iter()
+            .any(|action| matches!(action, KeyAssignment::CopyTo(_))));
+        assert!(actions
+            .iter()
+            .any(|action| matches!(action, KeyAssignment::PasteFrom(_))));
+    }
 }
 
 impl InputMap {
@@ -49,18 +74,9 @@ impl InputMap {
 
         if !config.disable_default_key_bindings {
             for (mods, code, action) in CommandDef::default_key_assignments(config) {
-                // Removed session-management shortcuts must not consume keys
-                // that the WSL application (including Kitty keyboard mode) can use.
-                if crate::termwindow::wsl_single_session_restriction(&action).is_some() {
-                    continue;
-                }
                 // If the user configures {key='p', mods='CTRL|SHIFT'} that gets
                 // normalized into {key='P', mods='CTRL'} in Config::key_bindings(),
                 // and that value exists in `keys.default` when we reach this point.
-                //
-                // When we get here with the default assignments for ActivateCommandPalette
-                // we are going to register un-normalized entries that don't match
-                // the existing normalized entry.
                 //
                 // Ideally we'd unconditionally normalize_shift
                 // here and register the result if it isn't already in the map.
@@ -576,56 +592,6 @@ fn section_header(title: &str) {
     println!("{title}");
     println!("{dash}");
     println!();
-}
-
-pub fn ui_key(key: &KeyCode, ui_key_cap_rendering: UIKeyCapRendering) -> String {
-    match key {
-        KeyCode::Char('\x1b') | KeyCode::Char('\x7f')
-            if ui_key_cap_rendering == UIKeyCapRendering::AppleSymbols =>
-        {
-            "\u{238b}".to_string()
-        }
-        KeyCode::Char('\x1b') | KeyCode::Char('\x7f') => "Esc".to_string(),
-        KeyCode::Char('\x08') if ui_key_cap_rendering == UIKeyCapRendering::AppleSymbols => {
-            "\u{232b}".to_string()
-        }
-        KeyCode::Char('\x08') => "Del".to_string(),
-        KeyCode::Char('\r') if ui_key_cap_rendering == UIKeyCapRendering::AppleSymbols => {
-            "\u{21b5}".to_string()
-        }
-        KeyCode::Char('\r') => "Enter".to_string(),
-        KeyCode::Physical(PhysKeyCode::Space) | KeyCode::Char(' ')
-            if ui_key_cap_rendering == UIKeyCapRendering::AppleSymbols =>
-        {
-            "\u{2423}".to_string()
-        }
-        KeyCode::Char(' ') => "Space".to_string(),
-        KeyCode::Char('\t') if ui_key_cap_rendering == UIKeyCapRendering::AppleSymbols => {
-            "\u{21e5}".to_string()
-        }
-        KeyCode::Char('\t') => "Tab".to_string(),
-        KeyCode::Char(c) if c.is_ascii_control() => c.escape_debug().to_string(),
-        KeyCode::Char(c) => c.to_uppercase().to_string(),
-
-        KeyCode::Physical(PhysKeyCode::PageUp) | KeyCode::PageUp
-            if ui_key_cap_rendering == UIKeyCapRendering::AppleSymbols =>
-        {
-            "\u{21de}".to_string()
-        }
-        KeyCode::Physical(PhysKeyCode::PageDown) | KeyCode::PageDown
-            if ui_key_cap_rendering == UIKeyCapRendering::AppleSymbols =>
-        {
-            "\u{21df}".to_string()
-        }
-        KeyCode::Physical(PhysKeyCode::LeftArrow) | KeyCode::LeftArrow => "\u{2190}".to_string(),
-        KeyCode::Physical(PhysKeyCode::UpArrow) | KeyCode::UpArrow => "\u{2191}".to_string(),
-        KeyCode::Physical(PhysKeyCode::RightArrow) | KeyCode::RightArrow => "\u{2192}".to_string(),
-        KeyCode::Physical(PhysKeyCode::DownArrow) | KeyCode::DownArrow => "\u{2193}".to_string(),
-        KeyCode::Function(n) => format!("F{n}"),
-        KeyCode::Numpad(n) => format!("Numpad{n}"),
-        KeyCode::Physical(phys) => phys.to_string(),
-        _ => format!("{key:?}"),
-    }
 }
 
 pub fn human_key(key: &KeyCode) -> String {

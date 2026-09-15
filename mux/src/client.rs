@@ -45,8 +45,6 @@ pub struct ClientInfo {
     /// The time this client last connected
     #[serde(with = "ts_seconds")]
     pub connected_at: DateTime<Utc>,
-    /// Which workspace is active
-    pub active_workspace: Option<String>,
     /// The last time we received input from this client
     #[serde(with = "ts_seconds")]
     pub last_input: DateTime<Utc>,
@@ -59,7 +57,6 @@ impl ClientInfo {
         Self {
             client_id,
             connected_at: Utc::now(),
-            active_workspace: None,
             last_input: Utc::now(),
             focused_pane_id: None,
         }

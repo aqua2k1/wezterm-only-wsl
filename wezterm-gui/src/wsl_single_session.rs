@@ -24,6 +24,7 @@ pub(crate) fn run(opts: StartCommand, requested_domain_name: Option<String>) -> 
 
 // Keep the implementation type-checked on all hosts; `run` only calls it on
 // Windows, where LocalDomain wraps the command with wsl.exe through ConPTY.
+#[cfg(windows)]
 fn run_windows(opts: StartCommand, requested_domain_name: Option<String>) -> anyhow::Result<()> {
     if let Some(cls) = opts.class.as_ref() {
         crate::set_window_class(cls);
@@ -72,6 +73,7 @@ fn run_windows(opts: StartCommand, requested_domain_name: Option<String>) -> any
     gui.run_forever()
 }
 
+#[cfg(windows)]
 fn select_wsl_domain(
     config: &config::ConfigHandle,
     requested_name: Option<&str>,
@@ -83,6 +85,7 @@ fn select_wsl_domain(
     )
 }
 
+#[cfg(any(windows, test))]
 fn select_wsl_domain_from(
     domains: Vec<config::WslDomain>,
     requested_name: Option<&str>,
@@ -119,6 +122,7 @@ fn select_wsl_domain_from(
         .expect("checked non-empty WSL domains"))
 }
 
+#[cfg(any(windows, test))]
 fn build_command(opts: &StartCommand) -> anyhow::Result<Option<portable_pty::CommandBuilder>> {
     if opts.prog.is_empty() && opts.cwd.is_none() {
         return Ok(None);
@@ -142,6 +146,7 @@ fn build_command(opts: &StartCommand) -> anyhow::Result<Option<portable_pty::Com
     Ok(Some(cmd))
 }
 
+#[cfg(windows)]
 fn setup_mux(domain: std::sync::Arc<dyn mux::domain::Domain>) {
     let mux = std::sync::Arc::new(mux::Mux::new(Some(domain)));
     mux::Mux::set_mux(&mux);
@@ -149,11 +154,9 @@ fn setup_mux(domain: std::sync::Arc<dyn mux::domain::Domain>) {
     let client_id = std::sync::Arc::new(mux::client::ClientId::new());
     mux.register_client(client_id.clone());
     mux.replace_identity(Some(client_id));
-    // The internal mux requires one workspace wrapper, but this mode never
-    // creates or switches any additional workspaces.
-    mux.set_active_workspace(mux::DEFAULT_WORKSPACE);
 }
 
+#[cfg(windows)]
 async fn spawn_initial_wsl_pane(
     domain: std::sync::Arc<dyn mux::domain::Domain>,
     cmd: Option<portable_pty::CommandBuilder>,
@@ -164,7 +167,7 @@ async fn spawn_initial_wsl_pane(
 
     // A single empty window is the internal wrapper used by the GUI; the
     // single-session mux feature rejects subsequent pane/tab/window spawns.
-    let window_id = *mux.new_empty_window(None, None);
+    let window_id = *mux.new_empty_window(None);
     domain.attach(Some(window_id)).await?;
 
     let dpi = config.dpi.unwrap_or_else(|| ::window::default_dpi());

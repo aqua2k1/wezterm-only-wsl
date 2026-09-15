@@ -3,8 +3,6 @@ use crate::bell::{AudibleBell, EasingFunction, VisualBell};
 use crate::color::{
     ColorSchemeFile, HsbTransform, Palette, SrgbaTuple, TabBarStyle, WindowFrameConfig,
 };
-use crate::daemon::DaemonOptions;
-use crate::exec_domain::ExecDomain;
 use crate::font::{
     AllowSquareGlyphOverflow, DisplayPixelGeometry, FontLocatorSelection, FontRasterizerSelection,
     FontShaperSelection, FreeTypeLoadFlags, FreeTypeLoadTarget, StyleRule, TextStyle,
@@ -16,7 +14,6 @@ use crate::keyassignment::{
 use crate::keys::{Key, LeaderKey, Mouse};
 use crate::lua::make_lua_context;
 use crate::units::Dimension;
-use crate::unix::UnixDomain;
 use crate::wsl::WslDomain;
 use crate::{
     default_config_with_overrides_applied, default_one_point_oh, default_one_point_oh_f64,
@@ -34,7 +31,6 @@ use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 use termwiz::hyperlink;
 use termwiz::surface::CursorShape;
 use wezterm_bidi::ParagraphDirectionHint;
@@ -362,21 +358,6 @@ pub struct Config {
     #[dynamic(default)]
     pub wsl_domains: Option<Vec<WslDomain>>,
 
-    #[dynamic(default)]
-    pub exec_domains: Vec<ExecDomain>,
-
-    /// The set of unix domains
-    #[dynamic(default = "UnixDomain::default_unix_domains")]
-    pub unix_domains: Vec<UnixDomain>,
-
-    /// Constrains the rate at which the multiplexer client will
-    /// speculatively fetch line data.
-    /// This helps to avoid saturating the link between the client
-    /// and server if the server is dumping a large amount of output
-    /// to the client.
-    #[dynamic(default = "default_ratelimit_line_prefetches_per_second")]
-    pub ratelimit_mux_line_prefetches_per_second: u32,
-
     /// The buffer size used by parse_buffered_data in the mux module.
     /// This should not be too large, otherwise the processing cost
     /// of applying a batch of actions to the terminal will be too
@@ -390,9 +371,6 @@ pub struct Config {
     /// observing "screen tearing" with un-synchronized output
     #[dynamic(default = "default_mux_output_parser_coalesce_delay_ms")]
     pub mux_output_parser_coalesce_delay_ms: u64,
-
-    #[dynamic(default = "default_mux_env_remove")]
-    pub mux_env_remove: Vec<String>,
 
     #[dynamic(default)]
     pub keys: Vec<Key>,
@@ -428,9 +406,6 @@ pub struct Config {
     pub mouse_bindings: Vec<Mouse>,
     #[dynamic(default)]
     pub disable_default_mouse_bindings: bool,
-
-    #[dynamic(default)]
-    pub daemon_options: DaemonOptions,
 
     #[dynamic(default)]
     pub send_composed_key_when_left_alt_is_pressed: bool,
@@ -842,19 +817,10 @@ pub struct Config {
     pub cell_widths: Option<Vec<CellWidth>>,
 
     #[dynamic(default = "default_true")]
-    pub allow_download_protocols: bool,
-
-    #[dynamic(default = "default_true")]
     pub allow_win32_input_mode: bool,
 
     #[dynamic(default)]
     pub default_domain: Option<String>,
-
-    #[dynamic(default)]
-    pub default_mux_server_domain: Option<String>,
-
-    #[dynamic(default)]
-    pub default_workspace: Option<String>,
 
     #[dynamic(default)]
     pub xcursor_theme: Option<String>,
@@ -1216,12 +1182,6 @@ impl Config {
             Ok(())
         };
 
-        for d in &self.unix_domains {
-            check_domain(&d.name, "unix domain")?;
-        }
-        for d in &self.exec_domains {
-            check_domain(&d.name, "exec domain")?;
-        }
         if let Some(domains) = &self.wsl_domains {
             for d in domains {
                 check_domain(&d.name, "wsl domain")?;
@@ -1635,10 +1595,6 @@ fn default_mux_output_parser_buffer_size() -> usize {
     128 * 1024
 }
 
-fn default_ratelimit_line_prefetches_per_second() -> u32 {
-    50
-}
-
 fn default_cursor_blink_rate() -> u64 {
     800
 }
@@ -1735,22 +1691,6 @@ pub(crate) fn compute_runtime_dir() -> anyhow::Result<PathBuf> {
     Ok(crate::HOME_DIR.join(".local/share/wezterm"))
 }
 
-pub fn pki_dir() -> anyhow::Result<PathBuf> {
-    compute_runtime_dir().map(|d| d.join("pki"))
-}
-
-pub fn default_read_timeout() -> Duration {
-    Duration::from_secs(60)
-}
-
-pub fn default_write_timeout() -> Duration {
-    Duration::from_secs(60)
-}
-
-pub fn default_local_echo_threshold_ms() -> Option<u64> {
-    Some(100)
-}
-
 fn default_bypass_mouse_reporting_modifiers() -> Modifiers {
     Modifiers::SHIFT
 }
@@ -1762,14 +1702,6 @@ fn default_gui_startup_args() -> Vec<String> {
 // Coupled with term/src/config.rs:TerminalConfiguration::unicode_version
 fn default_unicode_version() -> u8 {
     9
-}
-
-fn default_mux_env_remove() -> Vec<String> {
-    vec![
-        "SSH_AUTH_SOCK".to_string(),
-        "SSH_CLIENT".to_string(),
-        "SSH_CONNECTION".to_string(),
-    ]
 }
 
 fn default_anim_fps() -> u8 {
@@ -2150,7 +2082,7 @@ pub(crate) fn validate_domain_name(name: &str) -> Result<(), String> {
         Err(format!(
             "\"{name}\" is a built-in domain and cannot be redefined"
         ))
-    } else if name == "" {
+    } else if name.is_empty() {
         Err("the empty string is an invalid domain name".to_string())
     } else {
         Ok(())

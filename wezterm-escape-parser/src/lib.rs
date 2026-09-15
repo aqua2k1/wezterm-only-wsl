@@ -9,8 +9,6 @@
 #![allow(clippy::upper_case_acronyms)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
-#[cfg(feature = "tmux_cc")]
-use crate::tmux_cc::Event;
 use core::fmt::{Display, Formatter, Result as FmtResult, Write as FmtWrite};
 use num_derive::*;
 use wezterm_color_types::LinearRgba;
@@ -32,8 +30,6 @@ pub mod esc;
 pub mod hyperlink;
 pub mod osc;
 pub mod parser;
-#[cfg(feature = "tmux_cc")]
-pub mod tmux_cc;
 
 pub use self::apc::KittyImage;
 pub use self::csi::CSI;
@@ -237,9 +233,6 @@ pub enum DeviceControlMode {
     Data(u8),
     /// A self contained (Enter, Data*, Exit) sequence
     ShortDeviceControl(Box<ShortDeviceControl>),
-    /// Tmux parsed events
-    #[cfg(feature = "tmux_cc")]
-    TmuxEvents(Box<Vec<Event>>),
 }
 
 impl Display for DeviceControlMode {
@@ -263,8 +256,6 @@ impl Display for DeviceControlMode {
             Self::Exit => Ok(()),
             Self::Data(c) => f.write_char(*c as char),
             Self::ShortDeviceControl(s) => s.fmt(f),
-            #[cfg(feature = "tmux_cc")]
-            Self::TmuxEvents(_) => write!(f, "tmux event"),
         }
     }
 }
@@ -276,8 +267,6 @@ impl core::fmt::Debug for DeviceControlMode {
             Self::Exit => write!(fmt, "Exit"),
             Self::Data(b) => write!(fmt, "Data({:?} 0x{:x})", *b as char, *b),
             Self::ShortDeviceControl(s) => write!(fmt, "ShortDeviceControl({:?})", s),
-            #[cfg(feature = "tmux_cc")]
-            Self::TmuxEvents(_) => write!(fmt, "tmux event"),
         }
     }
 }

@@ -2317,7 +2317,7 @@ mod test {
     }
 
     #[test]
-    fn single_session_rejects_second_pane_and_split() {
+    fn single_session_rejects_second_pane() {
         let mux = Mux::new(None);
         let size = TerminalSize::default();
         let first = FakePane::new(1, size);
@@ -2331,17 +2331,6 @@ mod test {
         assert!(mux.add_pane(&second).is_err());
         assert_eq!(mux.iter_panes().len(), 1);
 
-        assert!(smol::block_on(mux.split_pane(
-            first.pane_id(),
-            SplitRequest::default(),
-            crate::domain::SplitSource::Spawn {
-                command: None,
-                command_dir: None,
-            },
-            config::keyassignment::SpawnTabDomain::DefaultDomain,
-        ))
-        .is_err());
-        assert!(smol::block_on(mux.move_pane_to_new_tab(first.pane_id(), None, None)).is_err());
     }
 
     #[test]

@@ -26,7 +26,6 @@ use wezterm_toast_notification::*;
 mod colorease;
 mod commands;
 mod customglyph;
-mod download;
 mod frontend;
 mod glyphcache;
 mod inputmap;
@@ -172,6 +171,7 @@ fn main() {
     frontend::shutdown();
 }
 
+#[cfg(windows)]
 fn maybe_show_configuration_error_window() {
     let warnings = config::configuration_warnings_and_errors();
     if !warnings.is_empty() {

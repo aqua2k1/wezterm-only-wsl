@@ -10,7 +10,6 @@ pub mod confirm;
 pub mod confirm_close_pane;
 pub mod copy;
 pub mod debug;
-pub mod launcher;
 pub mod prompt;
 pub mod quickselect;
 pub mod selector;
@@ -20,7 +19,6 @@ pub use confirm_close_pane::{
 };
 pub use copy::{CopyModeParams, CopyOverlay};
 pub use debug::show_debug_overlay;
-pub use launcher::{launcher, LauncherArgs, LauncherFlags};
 pub use quickselect::QuickSelectOverlay;
 
 pub fn start_overlay<T, F>(
