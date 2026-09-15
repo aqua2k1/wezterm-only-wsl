@@ -4,24 +4,7 @@ import sys
 import re
 
 CATEGORIZE = {
-    r".centos(\d+)(:?\S+)?.rpm$": "centos\\1_rpm",
-    r".fedora(\d+)(:?\S+)?.rpm$": "fedora\\1_rpm",
-    r".el(\d+).x86_64.rpm$": "centos\\1_rpm",
-    r".fc(\d+).x86_64.rpm$": "fedora\\1_rpm",
-    r".opensuse_leap(.*).rpm$": "opensuse_leap_rpm",
-    r".opensuse_tumbleweed(.*).rpm$": "opensuse_tumbleweed_rpm",
-    r"Debian(\d+)(\.\d+)?\.deb$": "debian\\1_deb",
-    r"Ubuntu(\d+)(\.\d+)?.AppImage$": "ubuntu\\1_AppImage",
-    r"Ubuntu(\d+)(\.\d+)?.deb$": "ubuntu\\1_deb",
-    r"Ubuntu(\d+)(\.\d+)?\.arm64\.deb$": "ubuntu\\1_arm64_deb",
-    r"Debian(\d+)(\.\d+)?\.arm64\.deb$": "debian\\1_arm64_deb",
-    r"Ubuntu20.04.tar.xz$": "linux_raw_bin",
-    r"^wezterm-\d+-\d+-[a-f0-9]+.tar.xz$": "linux_raw_bin",
-    r"src.tar.gz$": "src",
-    r"^WezTerm-macos-.*.zip$": "macos_zip",
     r"^WezTerm-windows-.*.zip$": "windows_zip",
-    r"^WezTerm-.*.setup.exe$": "windows_exe",
-    r"alpine(\d+)\.(\d+)(:?-\S+)?.apk": "alpine\\1_\\2_apk",
 }
 
 

@@ -3,7 +3,6 @@ default-members = ["wezterm-gui"]
 members = [
   "bidi",
   "bidi/generate",
-  "strip-ansi-escapes",
   "sync-color-schemes",
   "deps/cairo",
   "wezterm-blob-leases",

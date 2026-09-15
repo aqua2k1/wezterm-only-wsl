@@ -8,7 +8,7 @@ If you're thinking of helping out, then the following resources may be helpful:
 * [WezTerm on GitHub](https://github.com/wezterm/wezterm)
 * [GitHub Discussions](https://github.com/wezterm/wezterm/discussions)
 * [Realtime conversation with wez on Element.io/Gitter](help.md)
-* [Building from Source](install/source.md)
+* [Windows/WSL build notes](../docs-internal/windows-wsl-single-session.md)
 * [Where to find things and hacking on wezterm](https://github.com/wezterm/wezterm/blob/master/CONTRIBUTING.md#contributing-to-wezterm)
 
 I like to think that I have an open mind and I try to be open to ideas,

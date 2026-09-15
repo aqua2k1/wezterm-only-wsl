@@ -17,10 +17,10 @@ assignees: ''
 
 ## Dependencies
 
-Did you run the `get-deps` script to install required system dependencies?
-Was it successful?
+For Windows builds, did you install the Rust/MSVC prerequisites and initialize
+submodules? If using the portable build, include the package resource list.
 
-If building from the git repo, did you update the submodules?  Not doing this
+If building from the git repo, did you update the submodules? Not doing this
 is a common source of problems; see the information at
 <https://wezfurlong.org/wezterm/install/source.html> for more information.
 

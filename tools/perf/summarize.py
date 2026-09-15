@@ -95,7 +95,25 @@ def main():
                 f"{min(values):.1f}–{max(values):.1f} |"
             )
 
+    executables = environment.get("executables", {})
+    resources = environment.get("runtime_resources", {})
+    resource_bytes = sum(item["size_bytes"] for item in resources.values())
     lines += [
+        "",
+        "## Portable ZIP runtime footprint",
+        "",
+        "The portable package contains one GUI executable plus the fixed native runtime DLLs.",
+        "Sizes below are uncompressed; ZIP compression is not a runtime performance metric.",
+        "",
+        "| Build | GUI executable bytes | GUI executable MiB |",
+        "|---|---:|---:|",
+    ]
+    for label in LABELS:
+        size = executables.get(label, {}).get("size_bytes")
+        if size is not None:
+            lines.append(f"| {label} | {size} | {size / 1024 / 1024:.2f} |")
+    lines += [
+        f"| shared runtime DLLs | {resource_bytes} | {resource_bytes / 1024 / 1024:.2f} |",
         "",
         "## WSL/ConPTY output throughput",
         "",

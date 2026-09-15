@@ -13,12 +13,14 @@ prerequisites and initialized submodules:
 ```powershell
 git submodule update --init --recursive
 cargo build --release -p wezterm-gui --no-default-features
+bash ci/windows-zip.sh
 ```
 
-Run `target/release/wezterm-gui.exe` directly. The `wezterm` CLI launcher and
-standalone mux-server crates have been deleted. The default workspace build
-selects `wezterm-gui`; upstream CI/deployment scripts referring to the removed
-programs are not supported packaging entry points for this fork.
+The only supported artifact is the portable Windows ZIP containing
+`wezterm-gui.exe`, ConPTY, ANGLE and Mesa fallback resources. There is no
+Linux/Nix/macOS package, Inno installer, winget manifest, CLI launcher, or
+standalone mux-server artifact. Run `target/release/wezterm-gui.exe` directly
+when testing an unpacked build.
 
 `--no-default-features` omits bundled fonts. Install suitable fonts on Windows,
 or add `--features vendored-fonts` to the build command. Windows font fallback,
@@ -103,10 +105,10 @@ Kitty handlers does not implement cross-boundary file or shared-memory
 transport. Test supported transfers explicitly; do not promise that all transfer
 modes work across this boundary.
 
-The Windows build script still packages ConPTY, ANGLE, and Mesa resources. Do
-not remove ConPTY assets or GPU fallback DLLs before choosing and testing the
-rendering strategy. Removing source for other platforms does not improve the
-Windows runtime path and is not a priority.
+The Windows build/package path retains ConPTY, ANGLE (`prefer_egl`) and Mesa
+fallback resources. Do not remove those DLLs before Windows runtime testing.
+Other platform package definitions have been deleted; removing their source
+code is separate from this packaging cleanup.
 
 ## Validation before distribution
 
@@ -134,8 +136,12 @@ machine, verify:
   still required for GUI CPU, VRAM, present timing, and input-to-photon latency.
   Choose a backend only after those measurements.
 
-Measure WSL cold startup separately from GUI startup. The first WSL-native
-comparison is recorded in `docs-internal/windows-wsl-performance-20260915.md`
-(and its JSON companion); its Kitty/OpenGL variance is large enough that it is
-not a backend-selection result. Preserve glyph/shape/image caches until
-profiling justifies changes. No speedup percentage is claimed.
+Measure WSL cold startup separately from GUI startup. The latest packaging
+comparison is recorded in
+`docs-internal/windows-wsl-performance-packaging-20260915-v2.md` (and its JSON
+companion). It compares the prior candidate with the latest crop: OpenGL
+startup median improved from 831.6 ms to 800.3 ms; text/image throughput stayed
+within roughly ±3.5%. This is WSL/ConPTY data, not a Windows GUI or GPU
+benchmark, so it does not select OpenGL over WebGPU. Preserve glyph/shape/image
+caches until native profiling justifies changes. No speedup percentage is
+claimed beyond the stated harness measurements.

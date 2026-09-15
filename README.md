@@ -14,7 +14,7 @@ User facing docs and guide at: https://wezterm.org/
 
 ![Screenshot](docs/screenshots/two.png)
 
-*Screenshot of wezterm on macOS, running vim*
+*Screenshot of the Windows/WSL terminal*
 
 ## Installation
 

@@ -123,6 +123,22 @@ def environment(results: Path, executables: dict[str, Path], distro: str) -> Non
         if line.startswith("MemTotal:"):
             mem_total = int(line.split()[1]) * 1024
             break
+    repo = Path(__file__).resolve().parents[2]
+    resource_paths = [
+        repo / "assets/windows/conhost/conpty.dll",
+        repo / "assets/windows/conhost/OpenConsole.exe",
+        repo / "assets/windows/angle/libEGL.dll",
+        repo / "assets/windows/angle/libGLESv2.dll",
+        repo / "assets/windows/mesa/opengl32.dll",
+    ]
+    runtime_resources = {
+        str(path.relative_to(repo)): {
+            "size_bytes": path.stat().st_size,
+            "sha256": hash_file(path),
+        }
+        for path in resource_paths
+        if path.is_file()
+    }
     json_write(
         results / "environment.json",
         {
@@ -136,6 +152,7 @@ def environment(results: Path, executables: dict[str, Path], distro: str) -> Non
             "memory_bytes": mem_total,
             "os_release": os_release,
             "runner": "tools/perf/run-wsl.py",
+            "runtime_resources": runtime_resources,
             "executables": {
                 name: {
                     "path": str(path),
