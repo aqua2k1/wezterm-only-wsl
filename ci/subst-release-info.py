@@ -5,6 +5,7 @@ import re
 
 CATEGORIZE = {
     r"^WezTerm-windows-.*.zip$": "windows_zip",
+    r"^WezTerm-.*.setup.exe$": "windows_exe",
 }
 
 

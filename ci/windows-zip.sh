@@ -15,13 +15,23 @@ fi
 rm -rf "$zipdir" "$zipname"
 mkdir -p "$zipdir/mesa"
 
-cp "$TARGET_DIR/release/wezterm-gui.exe" \
+release_dir="$TARGET_DIR/release"
+cp "$release_dir/wezterm-gui.exe" \
   assets/windows/conhost/conpty.dll \
   assets/windows/conhost/OpenConsole.exe \
   assets/windows/angle/libEGL.dll \
   assets/windows/angle/libGLESv2.dll \
   "$zipdir/"
-cp "$TARGET_DIR/release/mesa/opengl32.dll" "$zipdir/mesa/"
+mkdir -p "$zipdir/mesa"
+# Keep Mesa in its subdirectory; WGL searches this directory explicitly.
+cp assets/windows/mesa/opengl32.dll "$zipdir/mesa/"
 
 # PDBs are optional diagnostics and are not part of the portable runtime.
-7z a -tzip "$zipname" "$zipdir"
+if command -v 7z >/dev/null 2>&1; then
+  7z a -tzip "$zipname" "$zipdir"
+elif command -v zip >/dev/null 2>&1; then
+  zip -qr "$zipname" "$zipdir"
+else
+  echo "windows-zip.sh requires 7z or zip" >&2
+  exit 1
+fi

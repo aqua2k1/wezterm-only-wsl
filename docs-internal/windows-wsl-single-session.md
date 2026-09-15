@@ -16,11 +16,12 @@ cargo build --release -p wezterm-gui --no-default-features
 bash ci/windows-zip.sh
 ```
 
-The only supported artifact is the portable Windows ZIP containing
-`wezterm-gui.exe`, ConPTY, ANGLE and Mesa fallback resources. There is no
-Linux/Nix/macOS package, Inno installer, winget manifest, CLI launcher, or
-standalone mux-server artifact. Run `target/release/wezterm-gui.exe` directly
-when testing an unpacked build.
+The supported artifacts are the portable Windows ZIP and the Windows Setup
+executable. Both contain only `wezterm-gui.exe`, ConPTY, ANGLE and Mesa fallback
+resources; Setup additionally installs shortcuts and PATH registration. There
+is no Linux/Nix/macOS package, winget manifest, CLI launcher, or standalone
+mux-server artifact. Run `target/release/wezterm-gui.exe` directly when testing
+an unpacked build.
 
 `--no-default-features` omits bundled fonts. Install suitable fonts on Windows,
 or add `--features vendored-fonts` to the build command. Windows font fallback,
