@@ -3,7 +3,7 @@ name: termwiz
 on:
   pull_request:
     branches:
-      - main
+      - only-wsl
     paths:
       - "termwiz/**"
       - "bidi/**"
@@ -14,7 +14,7 @@ on:
       - ".github/workflows/termwiz.yml"
   push:
     branches:
-      - main
+      - only-wsl
     paths:
       - "termwiz/**"
       - "bidi/**"

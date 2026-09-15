@@ -1,0 +1,13 @@
+#!/bin/sh
+# Keep the upstream-tracking main branch read-only.
+# This also blocks an explicit `git push -u origin main`.
+
+while read -r local_ref local_sha remote_ref remote_sha
+do
+    if [ "$local_ref" = "refs/heads/main" ] || [ "$remote_ref" = "refs/heads/main" ]; then
+        echo "拒绝推送 main：main 只从 upstream/main 拉取，请在 only-wsl 分支上开发。" >&2
+        exit 1
+    fi
+done
+
+exit 0

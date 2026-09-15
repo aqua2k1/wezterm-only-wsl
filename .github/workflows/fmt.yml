@@ -3,13 +3,13 @@ name: fmt
 on:
   pull_request:
     branches:
-      - main
+      - only-wsl
     paths:
       - "**/*.rs"
       - ".github/workflows/fmt.yml"
   push:
     branches:
-      - main
+      - only-wsl
     paths:
       - "**/*.rs"
       - ".github/workflows/fmt.yml"
