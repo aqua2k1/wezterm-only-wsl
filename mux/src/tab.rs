@@ -2330,7 +2330,6 @@ mod test {
         assert!(mux.ensure_single_session_spawn_allowed().is_err());
         assert!(mux.add_pane(&second).is_err());
         assert_eq!(mux.iter_panes().len(), 1);
-
     }
 
     #[test]

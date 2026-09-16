@@ -223,32 +223,32 @@ mod test {
             "
 [
     GlyphPosition {
-        glyph_idx: 189,
+        glyph_idx: 138,
         num_cells: 1,
         x_offset: 0.0,
         bearing_x: 1.0,
         bitmap_pixel_width: 8,
     },
     GlyphPosition {
-        glyph_idx: 1742,
+        glyph_idx: 1201,
         num_cells: 1,
         x_offset: 0.0,
         bearing_x: 0.0,
         bitmap_pixel_width: 0,
     },
     GlyphPosition {
-        glyph_idx: 1742,
+        glyph_idx: 1201,
         num_cells: 1,
         x_offset: 0.0,
         bearing_x: 0.0,
         bitmap_pixel_width: 0,
     },
     GlyphPosition {
-        glyph_idx: 896,
+        glyph_idx: 1119,
         num_cells: 1,
         x_offset: 0.0,
-        bearing_x: -15.0,
-        bitmap_pixel_width: 20,
+        bearing_x: -13.0,
+        bitmap_pixel_width: 17,
     },
 ]
 "
@@ -313,6 +313,16 @@ mod test {
             .filter_level(log::LevelFilter::Trace)
             .try_init();
         let config = config::configuration();
+
+        // Keep this test independent of the configured default font.
+        let mut config: config::Config = (*config).clone();
+        config.font = TextStyle {
+            font: vec![FontAttributes::new("JetBrains Mono")],
+            foreground: None,
+        };
+        config.font_rules.clear();
+        config.compute_extra_defaults(None);
+        config::use_this_configuration(config.clone());
 
         let fonts = Rc::new(
             FontConfiguration::new(
