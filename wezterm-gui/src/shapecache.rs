@@ -314,16 +314,6 @@ mod test {
             .try_init();
         let config = config::configuration();
 
-        // Keep this test independent of the configured default font.
-        let mut config: config::Config = (*config).clone();
-        config.font = TextStyle {
-            font: vec![FontAttributes::new("JetBrains Mono")],
-            foreground: None,
-        };
-        config.font_rules.clear();
-        config.compute_extra_defaults(None);
-        config::use_this_configuration(config.clone());
-
         let fonts = Rc::new(
             FontConfiguration::new(
                 None,
@@ -334,7 +324,11 @@ mod test {
         let render_metrics = RenderMetrics::new(&fonts).unwrap();
         let mut glyph_cache = GlyphCache::new_in_memory(&fonts, 128).unwrap();
 
-        let style = TextStyle::default();
+        // Keep this test independent of the configured default font.
+        let style = TextStyle {
+            font: vec![FontAttributes::new("JetBrains Mono")],
+            foreground: None,
+        };
         let font = fonts.resolve_font(&style).unwrap();
 
         k9::snapshot!(
