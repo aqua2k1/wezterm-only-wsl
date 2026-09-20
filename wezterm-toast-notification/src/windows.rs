@@ -1,6 +1,6 @@
 #![cfg(windows)]
 
-use crate::ToastNotification as TN;
+use crate::{ToastNotification as TN, WINDOWS_APP_USER_MODEL_ID};
 use std::ffi::OsStr;
 use std::fs;
 use std::mem::{self, ManuallyDrop};
@@ -27,7 +27,6 @@ use windows::UI::Notifications::{
     ToastActivatedEventArgs, ToastFailedEventArgs, ToastNotification, ToastNotificationManager,
 };
 
-const APP_USER_MODEL_ID: &str = "org.wezfurlong.wezterm";
 const CLSID_SHELL_LINK: GUID = GUID::from_u128(0x00021401_0000_0000_c000_000000000046);
 const PKEY_APP_USER_MODEL_ID: PROPERTYKEY = PROPERTYKEY {
     fmtid: GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3),
@@ -49,7 +48,7 @@ fn wide(value: &OsStr) -> Vec<u16> {
 }
 
 fn app_user_model_id_prop_variant() -> Result<PROPVARIANT, String> {
-    let value = wide(OsStr::new(APP_USER_MODEL_ID));
+    let value = wide(OsStr::new(WINDOWS_APP_USER_MODEL_ID));
     let bytes = value
         .len()
         .checked_mul(mem::size_of::<u16>())
@@ -217,10 +216,11 @@ fn show_notif_impl(toast: TN) -> Result<(), Box<dyn std::error::Error>> {
         },
     ))?;
 
-    let notifier =
-        ToastNotificationManager::CreateToastNotifierWithId(HSTRING::from(APP_USER_MODEL_ID))?;
+    let notifier = ToastNotificationManager::CreateToastNotifierWithId(HSTRING::from(
+        WINDOWS_APP_USER_MODEL_ID,
+    ))?;
     if let Ok(setting) = notifier.Setting() {
-        log::debug!("Windows toast setting for {APP_USER_MODEL_ID}: {setting:?}");
+        log::debug!("Windows toast setting for {WINDOWS_APP_USER_MODEL_ID}: {setting:?}");
     }
     notifier.Show(&notif)?;
 
