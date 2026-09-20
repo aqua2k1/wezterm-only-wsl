@@ -17,5 +17,5 @@ resources.
 [:fontawesome-brands-windows: Nightly Windows portable ZIP :material-tray-arrow-down:]({{ windows_zip_nightly }}){ .md-button }
 
 1. Download either the Setup executable or <a href="{{ windows_zip_stable }}">the release ZIP</a>
-2. Run Setup, or extract the ZIP and run `wezterm-gui.exe`. The GUI repairs its per-user Start-menu toast registration when it first needs to show a desktop notification.
+2. Run Setup, or extract the ZIP and run `wezterm-gui.exe`
 3. Configure the WSL domain as described [here](../config/files.md)
