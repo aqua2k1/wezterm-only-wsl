@@ -2,11 +2,6 @@ mod dbus;
 mod macos;
 mod windows;
 
-/// AppUserModelID used by the Windows/WSL fork for desktop toasts.
-/// Keep this distinct from upstream WezTerm so Windows does not reuse a
-/// stale per-application notification permission for another installation.
-pub const WINDOWS_APP_USER_MODEL_ID: &str = "org.wezfurlong.wezterm.only-wsl";
-
 #[derive(Debug, Clone)]
 pub struct ToastNotification {
     pub title: String,
